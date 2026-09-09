@@ -589,10 +589,11 @@ proc main() =
       editor.prefillText = queued
       return false
     messages.add %*{"role": "user",
-                    "content": buildUserMessage(messages, queued)}
+                    "content": buildUserMessage(messages, queued, prof.vision,
+                                                 sessionImageDir(session.savePath))}
     refreshSystemPrompt(messages, prof, session.promptState)
     editor.echoRows = queuedRows
-    commitUserPromptTranscript(queued)
+    commitUserPromptTranscript(queued & imageAttachEcho())
     resetEditorRowModel(addr editor)
     editor.prefillText = ""
     clearDraft(session)
@@ -642,9 +643,10 @@ proc main() =
   # notification under the same condition as a typed turn. Returns true
   # if a buffered quit/interrupt event should end the session.
   proc runInitialPrompt(text: string): bool =
-    messages.add %*{"role": "user", "content": buildUserMessage(messages, text)}
+    messages.add %*{"role": "user", "content": buildUserMessage(messages, text,
+      prof.vision, sessionImageDir(session.savePath))}
     refreshSystemPrompt(messages, prof, session.promptState)
-    emitUserSubmit(text)
+    emitUserSubmit(text & imageAttachEcho())
     resetEditorRowModel(addr editor)
     clearDraft(session)
     result = runTurnWithSafetyNet()
@@ -759,14 +761,15 @@ proc main() =
           errLnS("no provider configured. use :provider add"), true)
         releaseIdleSubmittedInput()
         continue
-      messages.add %*{"role": "user", "content": buildUserMessage(messages, line)}
+      messages.add %*{"role": "user", "content": buildUserMessage(messages, line,
+        prof.vision, sessionImageDir(session.savePath))}
       refreshSystemPrompt(messages, prof, session.promptState)
       # User-submit transition: walk back to the previous turn's bar
       # row, repaint it as the receipt (cyan, skipped on the first turn),
       # echo the user's input as scroll-history content. Cursor lands
       # on the row directly after the last echo line, where callModel's
       # leading `\n` will set up the new spinner-footer scratch row.
-      emitUserSubmit(line)
+      emitUserSubmit(line & imageAttachEcho())
       resetEditorRowModel(addr editor)
       # The prompt is now a committed user turn: drop the draft sidecar so a
       # clean exit doesn't restore text the user already sent.

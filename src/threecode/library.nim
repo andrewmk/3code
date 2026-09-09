@@ -271,7 +271,8 @@ proc prompt*(s: AgentSession; text: string): string =
   ## happen. Raises `AgentError` on turn failure; the session stays valid
   ## and saved.
   s.messages.add %*{"role": "user",
-                    "content": buildUserMessage(s.messages, text)}
+                    "content": buildUserMessage(s.messages, text,
+                      s.profile.vision, sessionImageDir(s.state.savePath))}
   refreshSystemPrompt(s.messages, s.profile, s.state.promptState)
   clearDraft(s.state)
   let interrupted = runTurnsInteractive(s.profile, s.messages, s.state)

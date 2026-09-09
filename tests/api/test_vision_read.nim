@@ -117,6 +117,40 @@ else:
       check imgDir.startsWith(parentDir(s.state.savePath))
       s.close()
 
+    test "@attach rides the user message for a vision profile":
+      let root = newFixture("attach")
+      writeConfig(root, vision = true)
+      isolateEnv(root)
+      copyFile("testdata/images/tiny.png", root / "run" / "tiny.png")
+      writeFile(root / "run" / "stub_responses.json",
+        $(%*[{"content": "a tiny image, 16x12"}]))
+      putEnv("THREECODE_STUB_RESPONSES", root / "run" / "stub_responses.json")
+      resetStubResponses()
+
+      let s = initAgentSession(AgentOptions(cwd: root / "run",
+                                            experimental: true))
+      check s.prompt("@" & (root / "run" / "tiny.png") &
+                     " describe") == "a tiny image, 16x12"
+      # The submitted user message is a content array: text block with the
+      # @token visible, then the image block.
+      var attachMsg: JsonNode = nil
+      for m in s.messages:
+        if m{"role"}.getStr == "user" and m{"content"}.kind == JArray:
+          attachMsg = m
+      if attachMsg == nil:
+        checkpoint("no image attach message in history")
+        for m in s.messages:
+          checkpoint("  " & m{"role"}.getStr & ": " &
+            (if m{"content"}.kind == JString: m{"content"}.getStr[0 ..< min(60, m{"content"}.getStr.len)] else: "<array>"))
+        fail()
+      else:
+        let blocks = attachMsg{"content"}
+        check blocks.len == 2
+        check "@" & (root / "run" / "tiny.png") in blocks[0]{"text"}.getStr
+        check blocks[1]{"type"}.getStr == "image_url"
+        check blocks[1]{"image_url"}{"url"}.getStr.startsWith("data:image/")
+      s.close()
+
     test "non-vision profile: code-1 error, no image message":
       let root = newFixture("plain")
       writeConfig(root, vision = false)

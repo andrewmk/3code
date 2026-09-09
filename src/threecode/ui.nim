@@ -12,7 +12,7 @@
 import std/[algorithm, atomics, json, options, os, sequtils, strformat, strutils, tables, terminal, times]
 import types, util, prompts, session, config, api, compact, display, minline,
   fatprompt, streamexec, sandbox, actions, engine as termengine, auth_xai,
-  auth_openai, auth_google, oauth
+  auth_openai, auth_google, oauth, images
 
 const CommandNames* = [":help", ":tokens", ":clear", ":model", ":provider",
                       ":reasoning", ":streaming", ":notify", ":prompt", ":show",
@@ -1288,11 +1288,15 @@ proc sessionPreamble*(cwd: string): string =
   if notes.len > 0:
     result.add "\n\n<project_notes>\n" & notes & "\n</project_notes>"
 
-proc inlineAtFiles*(msg: string): string =
+proc inlineAtFiles*(msg: string, vision: bool, imgDir: string,
+    imgs: var seq[ImageInfo]): string =
   ## Find @path tokens (whitespace-delimited, must follow whitespace or start
   ## of input). For each that resolves to an existing regular file under cwd,
   ## append `\n\n=== {path} ===\n<content>` (capped) to the message. Leave the
-  ## @token visible so the model sees the user's intent.
+  ## @token visible so the model sees the user's intent. Image files never
+  ## inline as text: on a vision profile they encode into `imgDir` and land
+  ## in `imgs` for the caller to attach as content blocks; otherwise they
+  ## drop with a hint naming a vision model.
   result = msg
   var seen: seq[string]
   var i = 0
@@ -1306,16 +1310,29 @@ proc inlineAtFiles*(msg: string): string =
       let path = resolvePath(raw)
       if path notin seen and fileExists(path):
         seen.add path
-        const Cap = 64 * 1024
-        let content =
-          try:
-            let s = readFile(path)
-            if isBinaryContent(s): "[binary file: " & raw & " — skipped]"
-            elif s.len > Cap: utf8ByteCut(s, Cap) & "\n... [truncated; file is " & $s.len & " bytes]"
-            else: s
-          except CatchableError as e:
-            "[error reading file: " & e.msg & "]"
-        result.add "\n\n=== " & raw & " ===\n" & content
+        if isImagePath(path):
+          if vision:
+            let (info, err) =
+              encodeForVision(path, imgDir, nextImageIndex(imgDir))
+            if err.len > 0:
+              result.add "\n\n=== " & raw & " ===\n[" & err & "]"
+            else:
+              imgs.add info
+          else:
+            result.add "\n\n[image ignored: " & raw &
+              " — this model cannot see images; a vision model " &
+              "(glm-5.3-flash on zai) can inspect it]"
+        else:
+          const Cap = 64 * 1024
+          let content =
+            try:
+              let s = readFile(path)
+              if isBinaryContent(s): "[binary file: " & raw & " — skipped]"
+              elif s.len > Cap: utf8ByteCut(s, Cap) & "\n... [truncated; file is " & $s.len & " bytes]"
+              else: s
+            except CatchableError as e:
+              "[error reading file: " & e.msg & "]"
+          result.add "\n\n=== " & raw & " ===\n" & content
       i = j
     else:
       inc i
@@ -1327,15 +1344,32 @@ proc isFirstUserMessage*(messages: JsonNode): bool =
       return false
   true
 
-proc buildUserMessage*(messages: JsonNode, raw: string): string =
+var lastImageAttachments*: seq[string] = @[]
+  ## Source names attached by the most recent buildUserMessage; echo sites
+  ## turn it into the `[image attached]` suffix.
+
+proc buildUserMessage*(messages: JsonNode, raw: string, vision: bool,
+    imgDir: string): JsonNode =
   ## Apply @file inlining always; prepend the session preamble (cwd, git
   ## state, AGENTS.md, ls) only on the first user message of a session so
-  ## resumed conversations don't re-inject stale context.
-  let body = inlineAtFiles(raw)
-  if isFirstUserMessage(messages):
-    sessionPreamble(safeCwd()) & "\n\n" & body
-  else:
-    body
+  ## resumed conversations don't re-inject stale context. @image tokens on
+  ## a vision profile return a content array (text block first, image
+  ## blocks after) instead of a plain string.
+  var imgs: seq[ImageInfo]
+  lastImageAttachments.setLen 0
+  let body = inlineAtFiles(raw, vision, imgDir, imgs)
+  for im in imgs: lastImageAttachments.add im.name
+  let text =
+    if isFirstUserMessage(messages):
+      sessionPreamble(safeCwd()) & "\n\n" & body
+    else:
+      body
+  if imgs.len == 0: %text else: imageContentBlocks(text, imgs)
+
+proc imageAttachEcho*(): string =
+  ## Suffix for the transcript echo of a submitted prompt when its @image
+  ## tokens attached: `@mockup.png rebuild this [image attached]`.
+  if lastImageAttachments.len == 0: "" else: " [image attached]"
 
 proc readInput*(editor: var minline.LineEditor, done: var bool): string =
   ## Read a line submitted by the persistent input thread. The same
