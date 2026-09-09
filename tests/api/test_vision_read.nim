@@ -151,6 +151,44 @@ else:
         check blocks[1]{"image_url"}{"url"}.getStr.startsWith("data:image/")
       s.close()
 
+    test "save/resume re-embeds identical image bytes":
+      let root = newFixture("resumeimg")
+      writeConfig(root, vision = true)
+      isolateEnv(root)
+      copyFile("testdata/images/tiny.png", root / "run" / "tiny.png")
+      writeFile(root / "run" / "stub_responses.json", $(%*[
+        {"content": "first reply"},
+        {"content": "second reply"}
+      ]))
+      putEnv("THREECODE_STUB_RESPONSES", root / "run" / "stub_responses.json")
+      resetStubResponses()
+
+      let s1 = initAgentSession(AgentOptions(cwd: root / "run",
+                                            experimental: true))
+      discard s1.prompt("@" & (root / "run" / "tiny.png") & " describe")
+      var liveUri = ""
+      for m in s1.messages:
+        if m{"content"}.kind == JArray:
+          liveUri = m{"content"}[1]{"image_url"}{"url"}.getStr
+      require liveUri.len > 0
+      let savePath = s1.state.savePath
+      s1.close()
+
+      # Session file: image records by path, never base64.
+      let text = readFile(savePath)
+      check "image path=" in text
+      check "base64" notin text
+
+      let s2 = initAgentSession(AgentOptions(cwd: root / "run", resume: true,
+                                             experimental: true))
+      var resumedUri = ""
+      for m in s2.messages:
+        if m{"content"}.kind == JArray:
+          resumedUri = m{"content"}[1]{"image_url"}{"url"}.getStr
+      check resumedUri == liveUri
+      check s2.prompt("again") == "second reply"
+      s2.close()
+
     test "non-vision profile: code-1 error, no image message":
       let root = newFixture("plain")
       writeConfig(root, vision = false)

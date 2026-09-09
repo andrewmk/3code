@@ -23,12 +23,13 @@
 ## On load, the full OpenAI-shape `messages` JsonNode array is reconstructed
 ## from the records so the session can be resumed mid-conversation with no loss.
 
-import std/[algorithm, json, os, strutils, tables, times, tempfiles, sha1]
+import std/[algorithm, json, os, strformat, strutils, tables, times,
+  tempfiles, sha1]
 when defined(posix):
   import std/posix
 when defined(windows):
   import std/[widestrs, winlean]
-import types, prompts, util, actions
+import types, prompts, util, actions, images
 
 const SessionExt* = ".3log"
 
@@ -63,7 +64,7 @@ const SessionExt* = ".3log"
 # ---------------------------------------------------------------------------
 
 const Roles = ["session", "system", "context", "project_notes",
-               "user", "reasoning", "assistant",
+               "user", "image", "reasoning", "assistant",
                "tool_use", "tool_result", "tokens"]
 
 # ---------- paths ----------
@@ -978,11 +979,37 @@ proc renderSession*(session: Session, messages: JsonNode): string =
         emitRecord s, "system", m{"content"}.getStr("")
         seenSystem = true
     of "user":
-      let raw = m{"content"}.getStr("")
-      let (ctx, notes, body) = splitPreamble(raw)
-      if ctx.len > 0: emitRecord s, "context", ctx
-      if notes.len > 0: emitRecord s, "project_notes", notes
-      emitRecord s, "user", body
+      let c = m{"content"}
+      # Image-bearing user message: persist the text blocks, then one
+      # `image` record per block naming the delivered file on disk and its
+      # sha1 — never the base64. Resume re-embeds the exact bytes, so the
+      # re-sent message hits the provider's prompt cache.
+      if c != nil and c.kind == JArray:
+        let (ctx, notes, body) = splitPreamble(userTextBlocks(c))
+        if ctx.len > 0: emitRecord s, "context", ctx
+        if notes.len > 0: emitRecord s, "project_notes", notes
+        emitRecord s, "user", body
+        let imgDir = sessionImageDir(session.savePath)
+        for b in c.getElems:
+          if b{"type"}.getStr != "image_url": continue
+          let r = imageRefFromUri(b{"image_url"}{"url"}.getStr)
+          if r.fmt.len == 0 or r.data.len == 0: continue
+          let sha = $secureHash(r.data)
+          let p = imgDir / (sha[0 ..< 16] & "." & r.fmt)
+          try:
+            if not fileExists(p):
+              createDir(imgDir)
+              writeFile(p, r.data)
+            emitHeaderOnly s, &"image path={p} sha1={sha} fmt={r.fmt} " &
+              &"size={r.w}x{r.h}"
+          except CatchableError:
+            discard
+      else:
+        let raw = m{"content"}.getStr("")
+        let (ctx, notes, body) = splitPreamble(raw)
+        if ctx.len > 0: emitRecord s, "context", ctx
+        if notes.len > 0: emitRecord s, "project_notes", notes
+        emitRecord s, "user", body
     of "assistant":
       # Always emit the reasoning record, empty included: the live
       # transports stamp `reasoning_content` on every assistant message,
@@ -1273,6 +1300,39 @@ proc loadSessionFile*(path: string): (Session, JsonNode) =
       pendingNotes = ""
       messages.add %*{"role": "user", "content": content}
       lastAssistant = nil
+    of "image":
+      # Re-embed an image recorded after a user record: file present and
+      # sha1 intact → the same data URI bytes the live turn sent (provider
+      # prefix cache hit); anything else → a stale note in the text, no
+      # block. Attach and screenshot sources are identical at this layer.
+      if messages.len == 0 or
+          messages[^1]{"role"}.getStr != "user": continue
+      let um = messages[^1]
+      let path = kv.getOrDefault("path")
+      let sha = kv.getOrDefault("sha1").toLowerAscii
+      let fmt = kv.getOrDefault("fmt")
+      var ok = false
+      if path.len > 0 and fmt.len > 0 and fileExists(path):
+        try:
+          if ($secureHashFile(path)).toLowerAscii == sha:
+            if um{"content"}.kind != JArray:
+              var arr = newJArray()
+              arr.add %*{"type": "text", "text": um{"content"}.getStr}
+              um["content"] = arr
+            um{"content"}.add %*{"type": "image_url",
+              "image_url": {"url": imageDataUri(path, fmt)}}
+            ok = true
+        except CatchableError:
+          discard
+      if not ok:
+        let note = "\n[image stale: " & path.extractFilename & "]"
+        if um{"content"}.kind == JArray:
+          for b in um{"content"}.getElems:
+            if b{"type"}.getStr == "text":
+              b["text"] = %(b{"text"}.getStr & note)
+              break
+        else:
+          um["content"] = %(um{"content"}.getStr & note)
     of "reasoning":
       pendingReasoning = r.body
     of "assistant":

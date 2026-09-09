@@ -310,6 +310,37 @@ func dataUriDimensions(uri: string): (int, int) =
   except CatchableError:
     (0, 0)
 
+func userTextBlocks*(c: JsonNode): string =
+  ## Text blocks of a content array joined with newlines; image blocks
+  ## contribute nothing (persistence re-derives them from image records,
+  ## so their stand-in notes must not leak into the saved text).
+  ## String content passes through unchanged.
+  if c == nil or c.kind != JArray: return c.getStr
+  var parts: seq[string]
+  for b in c.getElems:
+    if b{"type"}.getStr == "text": parts.add b{"text"}.getStr
+  parts.join("\n")
+
+proc imageRefFromUri*(uri: string): tuple[fmt, data: string, w, h: int] =
+  ## Persistence view of an image block's data URI: delivered subtype,
+  ## raw bytes, delivered dimensions.
+  let comma = uri.find(',')
+  if comma < 0 or not uri.startsWith("data:image/"): return ("", "", 0, 0)
+  let semi = uri.find(';', 5)
+  result.fmt = uri[11 ..< (if semi > 0: semi else: comma)]
+  try:
+    result.data = decode(uri[comma + 1 .. ^1])
+  except CatchableError:
+    return ("", "", 0, 0)
+  (result.w, result.h) = imageDimensionsFromData(result.data)
+
+proc imageDataUri*(path, fmt: string): string =
+  ## The wire block URI for a delivered file on disk. Reading the exact
+  ## bytes back (never a re-encode) is what keeps resumed re-sends
+  ## byte-identical for providers' prompt caches.
+  "data:image/" & fmt & ";base64," &
+    encode(try: readFile(path) except CatchableError: "")
+
 proc userTextContent*(m: JsonNode): string =
   ## The one text accessor for a message: string content passes through; a
   ## content array joins its text blocks and stands image blocks in as
