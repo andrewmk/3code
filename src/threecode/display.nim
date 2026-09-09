@@ -920,7 +920,11 @@ proc showToolS*(arg: string, toolLog: seq[ToolRecord]): string =
     return errLnS(&"show: T{n} out of range (1..{toolLog.len})")
   let rec = toolLog[n-1]
   result = &"── T{n}  " & rec.banner & "\r\n"
-  if rec.kind == akPlan and rec.plan.len > 0:
+  if rec.kind == akRead and isImageReceipt(rec.output):
+    # The detail view shows the whole receipt (source format, delivered
+    # size) — still one line, never the base64.
+    result.add wrappedSubtleBytes(rec.output)
+  elif rec.kind == akPlan and rec.plan.len > 0:
     result.add planResultBytes(rec.plan)
   else:
     result.add toolResultBytes(rec.kind, rec.output, rec.code, n)
