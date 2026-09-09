@@ -308,3 +308,31 @@ independent of each other after 3; 6 after both; 7 anytime after 4; 8 last.
 Each chunk compiles, tests, and commits alone. Computer use then continues
 from `../computer-use-plan.md` phases 1+ with phase 0 (there) already done
 by chunks 1-6 here.
+
+## Appendix: chunk-8 shakedown record (2026-09-09)
+
+**Verified without keys** (mock-server e2e in `tests/api/test_vision_read.nim`,
+plus unit suites): attach and read both produce `image_url` content blocks
+in the exact conversation `callModel` sends; tool results stay text; the
+follow-up message lands after the tool batch; resume re-embeds
+byte-identical URIs from `path+sha1` records; compaction collapses blocks
+before the summarizer call; non-vision profiles get the glm-5.3-flash hint
+on both paths.
+
+**Live probe: NOT RUN.** The dev sandbox for this worktree denies reading
+`~/.config/3code/config` (the main worktree's `.sandbox` allowlists it; the
+vision worktree has no policy file, so the default deny applies). Every
+probe below still needs one live turn; run from a terminal with the real
+config, from this worktree:
+
+- `./3code -m zai.glm-5.3-flash "@testdata/images/ui-mockup.png describe this UI, then rebuild it as HTML"`
+  — verify pixel-level detail in the reply (proves the block reached the
+  model), note the prompt-token delta per attached image from the receipt,
+  and repeat with a 4K screenshot to watch the ladder fire (delivered ≤ 190 KB b64).
+- same, smaller, on a `deepseek-v4-flash-vision-exp` hosting.
+- openrouter `z-ai/glm-5.3-flash`: if images pass, flip that row's `vision`
+  flag in `prompts.nim` (currently false, deliberately).
+
+**Token-per-image measurements: PENDING** the probes above. Until then the
+computer-use phases should budget with the wire size (~190 KB b64 max,
+~48 KB JPEG typical) and treat provider-side image tokens as unknown.

@@ -40,6 +40,7 @@ An earlier round on GLM-5.2 against opencode alone: 3code used 75% fewer tokens 
 - **Aggressive caching** — covers all bases; every cache hit is money saved.
 - **Context compaction** — supersede-aware: later writes elide stale reads, shrinking context automatically.
 - **Self-clearing execution** — plan/execute skill resets context between phases for larger tasks. No context bloat.
+- **Vision** — `@mockup.png rebuild this` attaches the image; `read` on an image returns a receipt and the pixels ride the next message. Delivered once to JPEG q85 ≤1280 px inside a 190 KB budget, re-sent byte-identical on resume so the prompt cache stays hot; sessions persist `path+sha1`, never base64. Vision models: glm-5.3-flash on zai/zaicode and the deepseek flash-vision hostings; `[params] vision` overrides the curation per provider+model.
 
 We eat our own dog food — 3code is now written entirely with 3code, using GLM 5.2 on Z.ai's free tier.
 

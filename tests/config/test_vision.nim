@@ -83,3 +83,22 @@ suite "vision: visionCapable":
 
   test "empty profile is not vision-capable":
     check not visionCapable(Profile())
+
+suite "vision: system prompt":
+  test "vision profiles learn they can inspect images":
+    var p = Profile(name: "zai.glm-5.3-flash", model: "glm-5.3-flash",
+                    family: "glm")
+    p.vision = true
+    let vp = buildSystemPrompt(p)
+    check "You can see images. `read` on an image file" in vp
+    check "# Images" in vp
+    p.vision = false
+    let tp = buildSystemPrompt(p)
+    check "# Images" notin tp
+    check "You can see images" notin tp
+
+  test "prompt identity includes the vision flag":
+    var p = Profile(name: "zai.glm-5.3-flash", model: "glm-5.3-flash")
+    let base = profileIdentity(p)
+    p.vision = true
+    check profileIdentity(p) != base

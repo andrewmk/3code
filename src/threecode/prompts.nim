@@ -3532,9 +3532,20 @@ proc buildSystemPrompt(p: Profile, skills: string): string =
     return readFile(override)
       .replace("{{credit}}", buildCredit(p))
       .replace("{{skills}}", skills)
-  setup(p).prompt
+  var prompt = setup(p).prompt
     .replace("{{credit}}", buildCredit(p))
     .replace("{{skills}}", skills)
+  if p.vision:
+    # The base prompts assume a text-only terminal model; a vision profile
+    # can inspect images (`read` on one attaches it to the next message)
+    # and user messages may carry image blocks.
+    prompt.add "\n\n# Images\n\nYou can see images. `read` on an image " &
+      "file attaches it to your next message; user messages may also carry " &
+      "image blocks. Describe what is actually visible — geometry, colors, " &
+      "text — and say so when the resolution is too low to read something. " &
+      "You still cannot prove physical rendering; verify rendered output " &
+      "from the artifact itself."
+  prompt
 
 proc buildSystemPrompt*(p: Profile): string =
   buildSystemPrompt(p, discoverSkills())
@@ -3545,7 +3556,7 @@ proc profileIdentity*(p: Profile): string =
   ## derive from) has to appear here. Persisted in the session header and
   ## re-compared on resume so a reloaded session can prove its persisted
   ## prompt still matches the active profile.
-  $ %*[p.name, p.url, p.model, p.family, p.version, p.variant]
+  $ %*[p.name, p.url, p.model, p.family, p.version, p.variant, p.vision]
 
 proc skillsDigest*(skills: string): string =
   ## Stable digest of a skills listing. Stored in `PromptState` and the
