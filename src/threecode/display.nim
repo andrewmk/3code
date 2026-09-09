@@ -23,7 +23,8 @@
 ## clean mode switch.
 
 import std/[critbits, exitprocs, json, os, strformat, strutils, tables, terminal]
-import types, util, config, prompts, session, actions, minline, toolstream
+import types, util, config, prompts, session, actions, minline, toolstream,
+  images
 import terminal as termui
 
 # Three visible tiers, designed to read on both light + dark terminal
@@ -679,6 +680,8 @@ proc toolResultBytes*(kind: ActionKind; res: string; code: int; idx: int;
         Reset & "\r\n"
       for i in lines.len - tailLen ..< lines.len:
         result.add wrappedSubtleBytes(lines[i])
+  elif kind == akRead and isImageReceipt(res):
+    result.add wrappedSubtleBytes(imageReadBanner(res))
   elif kind == akRead:
     var lines = res.splitLines
     while lines.len > 0 and lines[^1].startsWith("... [") and

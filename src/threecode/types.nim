@@ -5,6 +5,7 @@
 ## profile needs it, and threading it through every call site is noise.
 
 import std/[json, options, os, strutils, tables, times]
+import images
 
 var experimentalEnabled*: bool = false
   ## Set by `-x`/`--experimental`.
@@ -193,6 +194,8 @@ type
     plan*: seq[PlanItem]
   ReadCache* = ref object
     state*: Table[string, (Time, int)]
+    images*: seq[ImageInfo]  ## image reads this tool batch; the turn loop
+                            ## drains it into a follow-up user message
   PromptState* = object
     system*: JsonNode
     identity*, skills*: string

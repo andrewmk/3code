@@ -75,6 +75,17 @@ proc sessionIdFromPath*(path: string): string =
   let name = path.extractFilename
   if name.endsWith(SessionExt): name[0 ..< name.len - SessionExt.len] else: name
 
+proc sessionImageDir*(sessionPath: string): string =
+  ## Per-session store for vision delivery files: `<sessions>/<id>.img/`,
+  ## a sibling of the session file keyed by its id so resume can find the
+  ## exact delivered bytes again (providers' prompt caches key on content
+  ## bytes, so re-sends must be identical). No session file (library use
+  ## without one) lands in a temp dir instead.
+  if sessionPath.len > 0:
+    sessionDir() / (sessionIdFromPath(sessionPath) & ".img")
+  else:
+    getTempDir() / "3code-img"
+
 proc newSessionPath*(): string =
   let stamp = now().format("yyyyMMdd'T'HHmmss")
   createDir(sessionDir())

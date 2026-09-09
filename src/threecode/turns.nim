@@ -6,11 +6,12 @@
 ## `api.nim` should stay transport/protocol focused; visual consequences of
 ## model/tool progress should flow through this layer.
 
-import std/[algorithm, json, os, sets, strformat, strutils, tables, terminal, times]
+import std/[algorithm, json, os, sequtils, sets, strformat, strutils, tables,
+  terminal, times]
 when defined(posix):
   import std/posix except Time
 import types, util, prompts, session, compact, config, actions, api,
-  display, fatprompt, streamexec, toolstream, transcript
+  display, fatprompt, streamexec, toolstream, transcript, images
 import engine as termengine
 
 const
@@ -143,6 +144,19 @@ proc collectValues(node: JsonNode, outSet: var HashSet[string]) =
   else:
     discard
 
+proc imageReadToken(name, argsStr: string): string =
+  ## Synthetic distinctive token for `read` of an image: image reads are
+  ## expensive (full re-encode + base64 on the wire), so repeats of the
+  ## same image must escalate even when the path token falls under the
+  ## 6-char floor or the calls vary only in offset/limit. Keyed on the
+  ## whole path so two different images never share a token.
+  if "read" notin name.toLowerAscii: return ""
+  try:
+    let p = parseJson(argsStr){"path"}.getStr("")
+    if p.len > 0 and isImagePath(p): "read:img:" & p else: ""
+  except CatchableError:
+    ""
+
 proc distinctiveTokens(argsStr: string): HashSet[string] =
   ## Tokens likely to carry the *intent* of a call, as opposed to shell
   ## grammar, cwd boilerplate, argument-key names or universal flags.
@@ -193,7 +207,9 @@ proc observeCall*(det: var FlailDetector, name, argsStr: string): FlailVerdict =
   # The ring only starts filling at FlailStreakArm calls into the run, so
   # a healthy burst of same-tool iteration (compile, read, tweak, test)
   # shorter than that never arms the signal at all.
-  let toks = distinctiveTokens(argsStr)
+  var toks = distinctiveTokens(argsStr)
+  let imgTok = imageReadToken(name, argsStr)
+  if imgTok.len > 0: toks.incl imgTok
   if det.streakName != name:
     det.streakName = name
     det.streakLen = 0
@@ -943,7 +959,8 @@ proc runTurns*(p: Profile, messages: var JsonNode, session: var Session): bool =
                 if toolStub != nil and toolStub.kind == JObject:
                   stubToolCallResult(toolStub)
                 else:
-                  runAction(act, session.readCache)
+                  runAction(act, session.readCache, p.vision,
+                            sessionImageDir(session.savePath))
           except CatchableError as e:
             r = "ERROR: tool execution failed: " & e.msg
             code = -1
@@ -1067,6 +1084,22 @@ proc runTurns*(p: Profile, messages: var JsonNode, session: var Session): bool =
         endTurnAfterTranscriptAppend()
         turnEnded = true
         return false
+      # Image reads this batch ride a follow-up user message: image
+      # blocks in tool results are not portable across OpenAI-compat
+      # providers, user-message blocks are. Capped at MaxImagesPerTurn so
+      # a model that reads a gallery cannot attach it all in one turn.
+      if session.readCache != nil and session.readCache.images.len > 0:
+        var imgs = session.readCache.images
+        session.readCache.images.setLen 0
+        var extraNote = ""
+        if imgs.len > MaxImagesPerTurn:
+          let rest = imgs[MaxImagesPerTurn ..^ 1].mapIt(it.name)
+          extraNote = &"\n[{rest.len} image read(s) not attached: " &
+            rest.join(", ") & "]"
+          imgs.setLen MaxImagesPerTurn
+        let names = imgs.mapIt(it.name).join(", ")
+        messages.add imageUserMessage(
+          &"attached: {names} (image read){extraNote}", imgs)
       saveSession(session, messages)
       if isInterrupted():
         onTurnInterrupted()

@@ -13,6 +13,7 @@ const
   JpegLadder = [85, 70, 55, 40]
   ImageShrinkStep = 0.8
   MaxAttachPerMessage* = 3
+  MaxImagesPerTurn* = 4           ## read-on-image cost cap; extras are noted, not attached
 
 type
   ImageInfo* = object
@@ -20,6 +21,7 @@ type
     deliveredWidth*, deliveredHeight*: int
     format*: string                 ## delivered subtype for the data URI
     path*: string                   ## delivered file on disk
+    name*: string                   ## source basename, for receipts and notes
 
 func u8(d: string, i: int): int {.inline.} = int(uint8(d[i]))
 
@@ -178,7 +180,7 @@ proc encodeForVision*(src, destDir: string, idx: int,
   let ext = if jpeg: "jpeg" else: "png"
   let dst = destDir / &"{idx:03d}.{ext}"
   result = (ImageInfo(width: w, height: h, format: if jpeg: "jpeg" else: "png",
-                      path: dst), "")
+                      path: dst, name: src.extractFilename), "")
   let rk = findResizer()
   if rk == rkNone:
     # Last resort: deliver the original bytes when they already fit; the
@@ -252,6 +254,45 @@ proc imageContentBlocks*(text: string, imgs: seq[ImageInfo]): JsonNode =
     let uri = "data:image/" & img.format & ";base64," &
       encode(try: readFile(img.path) except CatchableError: "")
     result.add %*{"type": "image_url", "image_url": {"url": uri}}
+
+proc nextImageIndex*(destDir: string): int =
+  ## One past the highest NNN.* already in `destDir`, so re-reads never
+  ## overwrite earlier delivered bytes (resume re-embeds them by path).
+  for f in walkFiles(destDir / "*"):
+    try:
+      let n = parseInt(f.extractFilename.split('.')[0])
+      if n >= result: result = n + 1
+    except CatchableError: discard
+  max(result, 1)
+
+func srcFormatName*(path: string): string =
+  case path.splitFile.ext.toLowerAscii
+  of ".jpg": "JPEG"
+  of ".png": "PNG"
+  of ".webp": "WEBP"
+  of ".gif": "GIF"
+  of ".bmp": "BMP"
+  else: ""
+
+func imageReceipt*(name: string, info: ImageInfo, note = ""): string =
+  ## Text receipt for a `read` of an image: what was read, what will be
+  ## delivered. `imageReadBanner` parses this shape — change one, change
+  ## both.
+  result = &"image {name} {info.width}x{info.height} {srcFormatName(name)} -> " &
+    &"delivered {info.deliveredWidth}x{info.deliveredHeight} " &
+    info.format.toUpperAscii & "; attached below"
+  if note.len > 0: result.add "; " & note
+
+func isImageReceipt*(res: string): bool =
+  res.startsWith("image ") and "; attached below" in res
+
+func imageReadBanner*(receipt: string): string =
+  ## The one-line transcript form of a receipt:
+  ## `image logo.png 1920x1080 PNG -> delivered 1280x720 JPEG; ...`
+  ## becomes `· read img logo.png 1920x1080 -> 1280x720`.
+  let semi = receipt.find(';')
+  let toks = (if semi > 0: receipt[0 ..< semi] else: receipt).split(' ')
+  if toks.len >= 8: &"· read img {toks[1]} {toks[2]} -> {toks[6]}" else: receipt
 
 proc imageUserMessage*(text: string, imgs: seq[ImageInfo]): JsonNode =
   %*{"role": "user", "content": imageContentBlocks(text, imgs)}

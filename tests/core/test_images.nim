@@ -145,3 +145,37 @@ suite "images: message blocks":
     check "line one" in text and "line two" in text
     check "[image 16x12]" in text
     check "base64" notin text
+
+suite "images: read receipt and banner":
+  test "receipt format and banner round-trip":
+    let info = ImageInfo(width: 1920, height: 1080,
+      deliveredWidth: 1280, deliveredHeight: 720, format: "jpeg",
+      path: "/x/001.jpeg", name: "logo.png")
+    let r = imageReceipt("logo.png", info)
+    check r == "image logo.png 1920x1080 PNG -> delivered 1280x720 JPEG; " &
+      "attached below"
+    check isImageReceipt(r)
+    check imageReadBanner(r) == "· read img logo.png 1920x1080 -> 1280x720"
+    check not isImageReceipt("plain text that starts with image-ish words")
+    let noted = imageReceipt("shot.jpg", info,
+      "offset/limit ignored for images")
+    check isImageReceipt(noted)
+    check imageReadBanner(noted) == "· read img shot.jpg 1920x1080 -> 1280x720"
+    check noted.endsWith("; offset/limit ignored for images")
+
+  test "banner degrades gracefully on unknown shapes":
+    check imageReadBanner("image") == "image"
+
+  test "nextImageIndex allocates past existing files":
+    let work = getTempDir() / "3code-images-idx-" & $getCurrentProcessId()
+    removeDir(work)
+    createDir(work)
+    defer: removeDir(work)
+    check nextImageIndex(work) == 1
+    writeFile(work / "001.jpeg", "x")
+    writeFile(work / "002.jpeg", "x")
+    check nextImageIndex(work) == 3
+    writeFile(work / "007.png", "x")
+    check nextImageIndex(work) == 8
+    writeFile(work / "notes.txt", "x")
+    check nextImageIndex(work) == 8
