@@ -300,7 +300,7 @@ const
   ProviderParamsKeys = ["temperature", "max-tokens", "max_tokens",
                         "think-back", "think_back",
                         "context-window", "context_window",
-                        "allow-private", "allow_private"]
+                        "allow-private", "allow_private", "vision"]
   ParamsScopeKeys = ["provider", "model"]
   ThinkBackValues = ["none", "turn", "all"]
   SearchEngines = ["exa", "parallel", "brave"]
@@ -380,7 +380,7 @@ proc validateConfig*(path: string; entries: seq[RawEntry]): string =
         if ent.value.strip.toLowerAscii notin ThinkBackValues:
           return &"{path}:{ent.line}: unknown think-back mode '{ent.value}' " &
                  "(expected one of: none, turn, all)"
-      of "allow-private", "allow_private":
+      of "allow-private", "allow_private", "vision":
         if ent.value.strip.toLowerAscii notin BoolValues:
           return &"{path}:{ent.line}: bad value '{ent.value}' for '{ent.key}' " &
                  "in [params] (expected on or off)"
@@ -564,6 +564,11 @@ proc parseConfigFile*(path: string): (string, seq[ProviderRec], Table[string, st
           of "on", "true", "yes", "1": paramRec.params.allowPrivate = some(true)
           of "off", "false", "no", "0": paramRec.params.allowPrivate = some(false)
           else: discard
+        of "vision":
+          case v.strip.toLowerAscii
+          of "on", "true", "yes", "1": paramRec.params.vision = some(true)
+          of "off", "false", "no", "0": paramRec.params.vision = some(false)
+          else: discard
         else: discard
       of "shortcuts":
         shortcuts[e.key] = v
@@ -655,6 +660,9 @@ proc writeConfigFile*(path: string, current: string,
     if pm.params.allowPrivate.isSome:
       buf.add "allow-private = " &
         quoteVal(if pm.params.allowPrivate.get: "true" else: "false") & "\n"
+    if pm.params.vision.isSome:
+      buf.add "vision = " &
+        quoteVal(if pm.params.vision.get: "true" else: "false") & "\n"
   writeFile(path, buf)
 
 proc configPath*(): string =
@@ -710,6 +718,7 @@ proc patchParams(dst: var ModelParams, src: ModelParams) =
   if src.thinkBack.isSome: dst.thinkBack = src.thinkBack
   if src.contextWindow.isSome: dst.contextWindow = src.contextWindow
   if src.allowPrivate.isSome: dst.allowPrivate = src.allowPrivate
+  if src.vision.isSome: dst.vision = src.vision
 
 proc resolveParams*(list: seq[ParamsRec], provider, model: string): ModelParams =
   ## The `[params]` settings that govern this (provider, model), merged
@@ -736,6 +745,17 @@ proc privateAllowed*(p: Profile): bool =
   let dot = p.name.find('.')
   if dot < 0: return false
   knownGoodAllowsPrivate(p.name[0 ..< dot], p.model)
+
+proc visionCapable*(p: Profile): bool =
+  ## May this profile receive image content? An explicit `[params] vision`
+  ## wins (either way, so `vision = false` can also revoke a curated
+  ## combo); otherwise the known-good table's curated flag; otherwise
+  ## false. Empty profiles return false.
+  if p.name == "": return false
+  if p.params.vision.isSome: return p.params.vision.get
+  let dot = p.name.find('.')
+  if dot < 0: return false
+  knownGoodVision(p.name[0 ..< dot], p.model)
 
 proc privateGateText*(p: Profile): string =
   ## The private-gate refusal. Magenta styling is applied by the caller's
@@ -809,6 +829,7 @@ proc buildProfile*(current: string, providers: seq[ProviderRec],
       prof.variant = vrt
       prof.reasoning = resolveReasoning(pr, prof)
       prof.params = resolveParams(activeParams, pr.name, fullModel)
+      prof.vision = visionCapable(prof)
       return prof
   Profile()
 
@@ -869,6 +890,7 @@ proc loadProfile*(wanted: string): Profile =
   prof.variant = vrt
   prof.reasoning = resolveReasoning(prov, prof)
   prof.params = resolveParams(activeParams, prov.name, fullModel)
+  prof.vision = visionCapable(prof)
   if wanted == "" and not experimentalEnabled and not isKnownGood(prof):
     let fallback = firstKnownGoodCombo(providers)
     if fallback != "":
