@@ -2,7 +2,7 @@ Changelog
 
 **Unreleased**
 
-- **Test build: browser-backed `web_fetch` behind `browser_fetch = on`.**
+- **Test build: browser-backed `web_fetch` behind `browserfetch = on`.**
   When the plain fetch survives tag-stripping as almost nothing (a JS
   shell, e.g. a Reddit profile), the fetch is redone in a shared headless
   Chrome and the rendered page text is returned instead. One browser per

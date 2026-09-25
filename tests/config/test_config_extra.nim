@@ -55,7 +55,7 @@ suite "config: [settings] max_timeout":
     writeConfigFile(tmp, "", @[])
     check not readFile(tmp).contains("max_timeout")
 
-suite "config: [settings] browser_fetch":
+suite "config: [settings] browserfetch":
   var tmp = ""
 
   setup:
@@ -67,17 +67,17 @@ suite "config: [settings] browser_fetch":
     browserFetchEnabled = false
 
   test "parse accepts on and off":
-    writeFile(tmp, "[settings]\nbrowser_fetch = on\n")
+    writeFile(tmp, "[settings]\nbrowserfetch = on\n")
     discard parseConfigFile(tmp)
     check browserFetchEnabled
-    writeFile(tmp, "[settings]\nbrowser_fetch = \"off\"\n")
+    writeFile(tmp, "[settings]\nbrowserfetch = \"off\"\n")
     discard parseConfigFile(tmp)
     check not browserFetchEnabled
 
   test "writer persists on and omits the default off":
     browserFetchEnabled = true
     writeConfigFile(tmp, "test.model-a", @[])
-    check readFile(tmp).find("browser_fetch = \"on\"") >= 0
+    check readFile(tmp).find("browserfetch = \"on\"") >= 0
     browserFetchEnabled = false
     discard parseConfigFile(tmp)
     check browserFetchEnabled
@@ -87,7 +87,7 @@ suite "config: [settings] browser_fetch":
     removeFile(tmp)
     browserFetchEnabled = false
     writeConfigFile(tmp, "test.model-a", @[])
-    check readFile(tmp).find("browser_fetch") < 0
+    check readFile(tmp).find("browserfetch") < 0
 
 suite "config: parseConfigFile round-trip":
   var tmp = ""

@@ -336,7 +336,7 @@ const
   SettingsKeys = ["current", "notify", "streaming", "sandbox",
                   "sandbox_enabled", "patient_retry", "patient-retry",
                   "sandbox_wall_warn", "max_timeout", "max-timeout",
-                  "browser_fetch",
+                  "browserfetch",
                   "tone", "mode", "bash_path", "bash-path",
                   "bash", "auto_update"]
   SearchKeys = ["exa-key", "brave-key", "key", "engine"]
@@ -559,7 +559,7 @@ proc parseConfigFile*(path: string): (string, seq[ProviderRec], Table[string, st
           of "on", "true", "yes", "1": patientRetryEnabled = true
           of "off", "false", "no", "0": patientRetryEnabled = false
           else: discard
-        of "browser_fetch":
+        of "browserfetch":
           # Same boolean dialect, default off (types.nim): opting in keeps
           # a shared headless Chrome around for JS-shell web fetches.
           case v.toLowerAscii
@@ -808,7 +808,7 @@ proc writeConfigFile*(path: string, current: string,
   if not patientRetryEnabled:
     buf.add "patient_retry = \"off\"\n"
   if browserFetchEnabled:
-    buf.add "browser_fetch = \"on\"\n"
+    buf.add "browserfetch = \"on\"\n"
   if not sandboxWallWarn:
     buf.add "sandbox_wall_warn = \"off\"\n"
   # Bare number, not a quoted literal: the reader parseInts the raw value.

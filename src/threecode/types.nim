@@ -58,7 +58,7 @@ proc oneShotSessionId*(): string =
   "3code-" & oneShotSessionIdSeed
 
 var browserFetchEnabled*: bool = false
-  ## `[settings]` `browser_fetch = on`: when a plain `web_fetch` returns a
+  ## `[settings]` `browserfetch = on`: when a plain `web_fetch` returns a
   ## page whose text is next to nothing after tag stripping (a JS shell),
   ## redo the fetch in the shared headless browser and return the rendered
   ## text (browse.nim). Default off: it keeps a machine-wide headless

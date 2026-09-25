@@ -1,4 +1,4 @@
-## Browser-backed rendering for `web_fetch` (the `browser_fetch` setting).
+## Browser-backed rendering for `web_fetch` (the `browserfetch` setting).
 ##
 ## One headless Chrome per machine, one tab per fetch:
 ##
@@ -38,7 +38,7 @@ const
   ShellSuspectChars* = 200
     ## A plain fetch whose surviving text is shorter than this is presumed
     ## a JS shell (SPA markup with no server-rendered content) and is
-    ## redone here when `browser_fetch` is on. The ladder lives in
+    ## redone here when `browserfetch` is on. The ladder lives in
     ## actions.nim.
 
 proc debugBase(): string = "http://127.0.0.1:" & $BrowserPort
@@ -75,7 +75,7 @@ proc chromePath(): string =
       if p.len > 0: return p
       tried.add name
   raise newException(IOError,
-    "no Chrome/Chromium found for browser_fetch (tried: " &
+    "no Chrome/Chromium found for browserfetch (tried: " &
     tried.join(", ") & ")")
 
 proc ensureBrowser() =

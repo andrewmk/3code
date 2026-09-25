@@ -687,7 +687,7 @@ proc runAction*(act: Action, cache: ReadCache = nil): tuple[output: string, code
         return ("error: sandbox: " & u.hostname & " is denied by the " &
                 "policy (" & sandbox.policyHint() & ")", 1, "")
     proc browserRetry(): tuple[output: string, code: int, diff: string] =
-      # Second tier for `browser_fetch = on`: re-ask in the shared headless
+      # Second tier for `browserfetch = on`: re-ask in the shared headless
       # browser. Empty string output means the tier is off or it failed;
       # callers treat that as "keep the plain-fetch outcome".
       if not browserFetchEnabled: return ("", 0, "")
