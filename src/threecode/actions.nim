@@ -17,7 +17,7 @@
 ## `patch` can reject stale edits when the file changed since last read.
 
 import std/[json, os, sequtils, strformat, strutils, tables, times, uri]
-import types, util, shell, web, config, streamexec, sandbox
+import types, util, shell, web, config, streamexec, sandbox, browse
 
 # ---------------------------------------------------------------------------
 # Tool dispatch: strictly per-model.
@@ -686,10 +686,26 @@ proc runAction*(act: Action, cache: ReadCache = nil): tuple[output: string, code
       if not sandbox.checkRawHost(u.hostname, port):
         return ("error: sandbox: " & u.hostname & " is denied by the " &
                 "policy (" & sandbox.policyHint() & ")", 1, "")
+    proc browserRetry(): tuple[output: string, code: int, diff: string] =
+      # Second tier for `browser_fetch = on`: re-ask in the shared headless
+      # browser. Empty string output means the tier is off or it failed;
+      # callers treat that as "keep the plain-fetch outcome".
+      if not browserFetchEnabled: return ("", 0, "")
+      try:
+        return (capText(renderUrl(act.body)), 0, "")
+      except CatchableError:
+        return ("", 0, "")
     try:
       let text = fetchUrl(act.body)
+      # A plain fetch whose text is next to nothing is a JS shell (SPA
+      # markup, no server-rendered content): the browser tier renders it.
+      if browserFetchEnabled and text.len < ShellSuspectChars:
+        let rendered = browserRetry()
+        if rendered.output.len > 0: return rendered
       return (capText(text), 0, "")
     except CatchableError as e:
+      let rendered = browserRetry()
+      if rendered.output.len > 0: return rendered
       return ("error: web_fetch: " & e.msg, 1, "")
   of akClear:
     return ("", 0, "")
