@@ -424,24 +424,24 @@ proc runOauthLogin(
   hintLn "  signed in", resetStyle
   "oauth"
 
-proc xaiOauthLogin(): string =
+proc xaiOauthLogin*(): string =
   ## SuperGrok browser login against auth.x.ai.
   runOauthLogin("  sign in with your SuperGrok / X Premium+ account",
     auth_xai.loginBrowser, auth_xai.storeTokens)
 
-proc chatgptOauthLogin(): string =
+proc chatgptOauthLogin*(): string =
   ## ChatGPT Plus/Pro browser login against auth.openai.com (the Codex
   ## CLI public client).
   runOauthLogin("  sign in with your ChatGPT Plus/Pro account",
     auth_openai.loginBrowser, auth_openai.storeTokens)
 
-proc geminiOauthLogin(): string =
+proc geminiOauthLogin*(): string =
   ## Gemini Code Assist browser login against accounts.google.com (the
   ## gemini-cli public client).
   runOauthLogin("  sign in with your Google / Gemini Code Assist account",
     auth_google.loginBrowser, auth_google.storeTokens)
 
-proc claudeOauthLogin(): string =
+proc claudeOauthLogin*(): string =
   ## Claude Pro/Max browser login against claude.ai (the Claude Code
   ## public client; PKCE with the verifier echoed as state).
   runOauthLogin("  sign in with your Claude Pro / Max account",

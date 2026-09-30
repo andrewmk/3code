@@ -33,7 +33,7 @@ import threecode/[types, util, prompts, shell, session, compact,
                   config, actions, api, display, ui, update, fatprompt,
                   toolstream, turns, transcript, sandbox, box, wall,
                   auth_xai, auth_openai, auth_google, auth_anthropic,
-                  streamexec]
+                  streamexec, cli]
 when not defined(android):
   import tinotify
 else:
@@ -75,6 +75,8 @@ else:
 proc usage() {.noreturn.} =
   stderr.writeLine """usage: 3code [options] [prompt...]
        3code good                   # list known-good provider/variant combos
+       3code provider add <name|url|api-key> [--key KEY] [--models "a b c"]
+                                  # configure a provider without the wizard
        3code sandbox restrict DIR -- CMD   # run CMD sandboxed (alias: sb)
        3code setup                  # one-time elevated sandbox setup (Windows)
 
@@ -296,6 +298,41 @@ proc main() =
   for a in rawParams:
     if a in ["-v", "--version"]: echo Version; return
     if a in ["-h", "--help"]: usage()
+  # Non-interactive provider management (see cli.nim). Dispatches with
+  # the other early subcommands so its own flags (--key, --models) never
+  # hit the main option parser. `-c/-x` may precede the subcommand; they
+  # are picked out here and the rest goes to providerMain verbatim.
+  block:
+    var rest: seq[string]
+    var isProvider = false
+    var sawBare = false
+    var i = 0
+    while i < rawParams.len:
+      case rawParams[i]
+      of "-c", "--config":
+        if i + 1 >= rawParams.len:
+          if rawParams[0] == "provider":
+            die("option " & rawParams[i] & " requires a value", ExitUsage)
+          break
+        configPathOverride = rawParams[i + 1]
+        inc i
+      of "-x", "--experimental":
+        experimentalEnabled = true
+      else:
+        # Only a LEADING bare `provider` dispatches (after any -c/-x);
+        # a prompt word like `3code add a provider for x` must not.
+        if not sawBare and not rawParams[i].startsWith("-"):
+          sawBare = true
+          if rawParams[i] == "provider":
+            isProvider = true
+        else:
+          rest.add rawParams[i]
+      inc i
+    if isProvider:
+      var colorKeys: Table[string, string]
+      (activeCurrent, activeProviders, colorKeys) =
+        loadStateOrEmpty(configPath())
+      quit(providerMain(rest))
 
   startupTrace("early-dispatch-done")
   setupTlsEnv()

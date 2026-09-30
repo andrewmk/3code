@@ -2,6 +2,15 @@ Changelog
 
 **Unreleased**
 
+- **`3code provider` subcommand.** Non-interactive provider management
+  for scripts and keyless first setup: `provider add <name|url|api-key>
+  [--key KEY] [--models "a b c"]`, `provider models <name> <model...>`
+  (replace the list), `provider rm <name>`, and `provider list`. Same
+  first-field resolution as the wizard (catalog name, URL under
+  --experimental, API key, subscription login via browser OAuth);
+  without `--models` the provider's full known-good list is stored. No
+  verification ping; a bad key surfaces on the first turn.
+
 - **Claude Sonnet 5.5, GPT-6 Sol / Luna, GPT-6.1 Sol.** `claude-sonnet-5-5`
   is known-good for `anthropic` (API key) and `claudecode` (Pro/Max
   subscription): 1M context, 128k output, adaptive thinking with effort
@@ -11,7 +20,12 @@ Changelog
   and `gpt-6.1-sol` are known-good for `openai` and `chatgpt` plus the
   openrouter / opencode / nanogpt / venice gateways: 1.05M context,
   128k output cap; Sol/Luna keep `none` on the effort ladder, 6.1 Sol
-  always thinks (low..max like Astra).
+  always thinks (low..max like Astra). Live-verified: gpt-6-sol,
+  gpt-6-luna, and gpt-6.1-sol on openrouter; gpt-6-luna on the chatgpt
+  subscription (the Codex backend serves a per-account model list and
+  may not offer sol yet); opencode and venice reached upstream (402
+  balance); anthropic and nanogpt keys here lack credit/a valid
+  session, so those rows stay table-verified.
 
 - **The occasional "submit deletes the line above the prompt" is fixed.**
   A multi-row draft in the buffered mid-turn editor (history recall,

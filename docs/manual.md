@@ -166,6 +166,22 @@ combinations 3code has tested) and saves your selection as-is. With
 `--experimental` the wizard queries the provider's models endpoint and
 verifies each selection with a 1-token call; press Esc to stop verification.
 
+The same steps work without the wizard, from the command line:
+
+```
+3code provider add zai --key $ZAI_KEY
+3code provider add zai --key $ZAI_KEY --models "glm-5.3 glm-5.3-flash"
+3code provider models zai glm-5.3
+3code provider list
+3code provider rm zai
+```
+
+`add` takes the same first field as the wizard (catalog name, URL under
+`--experimental`, API key, or a subscription login name) plus `--key` and
+`--models`; without `--models` it stores the provider's full known-good
+list. `models` replaces the list. No verification ping runs; a bad key
+surfaces on the first turn.
+
 ### Run your first prompt
 
 ```

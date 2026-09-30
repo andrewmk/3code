@@ -498,3 +498,143 @@ suite "wall subcommand (built-in sandwall wall)":
       d.connect("127.0.0.1", proxyPort, timeout = 5000)
       posixSend(d.getFd(), "CONNECT denied.example:443 HTTP/1.1\r\n\r\n")
       check "200" notin posixRecvAll(d.getFd(), 0, "\r\n\r\n")
+
+suite "cli provider subcommand":
+  # `3code provider ...` manages the config without the TTY wizard.
+  # Each test gets an isolated XDG_CONFIG_HOME so the real config is
+  # never touched; the binary is the real one (binPath), matching the
+  # rest of this file.
+  var tmp: string
+
+  setup:
+    tmp = getTempDir() / ("3code-cli-prov-" & $getCurrentProcessId() & "deny" &
+                          $epochTime().int64)
+    createDir(tmp)
+
+  teardown:
+    if dirExists(tmp): removeDir(tmp)
+
+  proc runP(args: openArray[string]): tuple[o: string, code: int] =
+    let env = newStringTable({"XDG_DATA_HOME": tmp, "XDG_CONFIG_HOME": tmp})
+    let cmd = binPath().quoteShell & " " & args.mapIt(it.quoteShell).join(" ")
+    let (outp, code) = execCmdEx(cmd, {poStdErrToStdOut, poUsePath, poDaemon},
+                                env, tmp)
+    result = (outp.strip(), code)
+
+  proc configText(): string =
+    let p = tmp / "3code" / "config"
+    if fileExists(p): readFile(p) else: ""
+
+  test "list with no providers":
+    let r = runP(["provider", "list"])
+    check r.code == 0
+    check r.o == "no providers configured"
+
+  test "add with a catalog name and key writes the config":
+    let r = runP(["provider", "add", "mistral", "--key", "k"])
+    check r.code == 0
+    check "added mistral" in r.o
+    let cfg = configText()
+    check "name = \"mistral\"" in cfg
+    check "url = \"https://api.mistral.ai/v1\"" in cfg
+    check "key = \"k\"" in cfg
+    check "glm-5.3" in cfg  # curated default models
+    check "current = \"mistral." in cfg
+
+  test "add with --models stores exactly those models":
+    let r = runP(["provider", "add", "zai", "--key", "k",
+                  "--models", "glm-5.3 glm-5.3-flash"])
+    check r.code == 0
+    let cfg = configText()
+    check "models = \"glm-5.3 glm-5.3-flash\"" in cfg
+
+  test "add rejects unknown known-good models":
+    let r = runP(["provider", "add", "zai", "--key", "k",
+                  "--models", "not-a-model"])
+    check r.code == 3
+    check "unknown known-good model: not-a-model" in r.o
+    check configText() == ""  # nothing written
+
+  test "add rejects a duplicate provider":
+    discard runP(["provider", "add", "mistral", "--key", "k"])
+    let r = runP(["provider", "add", "mistral", "--key", "k2"])
+    check r.code == 3
+    check "already configured: mistral" in r.o
+
+  test "add without a key errors":
+    let r = runP(["provider", "add", "mistral"])
+    check r.code == 3
+    check "api key required (--key)" in r.o
+
+  test "add infers the provider from an api key entry":
+    let r = runP(["provider", "add", "sk-or-v1-fake"])
+    check r.code == 0
+    check "added openrouter" in r.o
+    check "url = \"https://openrouter.ai/api/v1\"" in configText()
+
+  test "add with a url needs --experimental":
+    let r = runP(["provider", "add", "https://x.example/v1", "--key", "k"])
+    check r.code == 3
+    check "custom urls need --experimental" in r.o
+    let r2 = runP(["-x", "provider", "add", "https://x.example/v1",
+                   "--key", "k", "--models", "m"])
+    check r2.code == 0
+    # defaultNameFromUrl takes the second label from the right
+    check "added x" in r2.o
+
+  test "models replaces the list and repairs current":
+    discard runP(["provider", "add", "zai", "--key", "k",
+                  "--models", "glm-5.3 glm-5.2"])
+    let r = runP(["provider", "models", "zai", "glm-5.2"])
+    check r.code == 0
+    check "zai: 1 models" in r.o
+    let cfg = configText()
+    check "models = \"glm-5.2\"" in cfg
+    check "current = \"zai.glm-5.2\"" in cfg
+
+  test "models on an unknown provider errors":
+    let r = runP(["provider", "models", "nope", "glm-5.3"])
+    check r.code == 3
+    check "unknown provider: nope" in r.o
+
+  test "rm removes the provider and re-points current":
+    discard runP(["provider", "add", "zai", "--key", "k"])
+    discard runP(["provider", "add", "mistral", "--key", "k"])
+    let r = runP(["provider", "rm", "zai"])
+    check r.code == 0
+    check "removed zai" in r.o
+    let cfg = configText()
+    check "name = \"zai\"" notin cfg
+    check "current = \"mistral." in cfg
+
+  test "rm of the last provider clears current":
+    discard runP(["provider", "add", "zai", "--key", "k"])
+    let r = runP(["provider", "rm", "zai"])
+    check r.code == 0
+    check "current = \"\"" in configText()
+
+  test "unknown subcommand prints usage":
+    let r = runP(["provider", "bogus"])
+    check r.code == 2
+    check "usage: 3code provider" in r.o
+
+  test "-c redirects the provider subcommand":
+    let cfgPath = tmp / "other.cfg"
+    let r = runP(["provider", "-c", cfgPath, "add", "mistral", "--key", "k"])
+    check r.code == 0
+    check fileExists(cfgPath)
+    check "name = \"mistral\"" in readFile(cfgPath)
+
+  test "a prompt mentioning provider is not hijacked":
+    # `provider` must be the leading bare word to dispatch; a prompt
+    # like `3code add a provider for x` still runs as a prompt (it fails
+    # here on the isolated config's wizard abort, which is the point:
+    # it did NOT run the provider subcommand).
+    let r = runP(["add", "a", "provider", "for", "x"])
+    check "usage: 3code provider" notin r.o
+    check "unknown subcommand" notin r.o
+
+  test "-h documents the subcommand":
+    let r = runP(["-h"])
+    check r.code == 2
+    check "3code provider add" in r.o
