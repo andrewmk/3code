@@ -4,7 +4,7 @@
 ## (streamHttp over a real socket) lives in tests/stream/test_streaming_sse.nim.
 
 import std/[json, unittest]
-import threecode/[anthropic, api, types]
+import threecode/[anthropic, api, prompts, types]
 
 suite "anthropic body translation":
   let p = Profile(name: "anthropic.claude-sonnet-5",
@@ -190,6 +190,44 @@ suite "anthropic body translation":
     let jo = parseJson(anthropicBody(opus, off))
     check "thinking" notin jo
     check "output_config" notin jo
+
+  test "sonnet 5.5 off maps to between_tools":
+    # Sonnet 5.5 rejects "disabled"; the off knob becomes
+    # between_tools, which takes no effort override and no
+    # block_binding. Recorded thinking blocks still replay (its
+    # progress-update blocks must ride back).
+    let sonnet55 = Profile(name: "anthropic.claude-sonnet-5-5",
+                           model: "claude-sonnet-5-5", family: "claude")
+    let off = %*{
+      "model": "claude-sonnet-5-5",
+      "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "done",
+         "reasoning_blocks": [{"thinking": "hmm", "signature": "s"}]},
+        {"role": "user", "content": "go"}],
+      "max_tokens": 65536,
+      "reasoning_effort": "off"}
+    let j = parseJson(anthropicBody(sonnet55, off))
+    check j{"thinking"}{"type"}.getStr == "between_tools"
+    check "block_binding" notin j{"thinking"}
+    check "output_config" notin j
+    check j{"messages"}[1]{"content"}[0]{"type"}.getStr == "thinking"
+
+  test "sonnet 5.5 asks for drop_block under the binding beta":
+    # Like Opus 5.5+, its thinking blocks are prefix-checked by
+    # default on accounts created after 2026-08-31.
+    let sonnet55 = Profile(name: "anthropic.claude-sonnet-5-5",
+                           model: "claude-sonnet-5-5", family: "claude")
+    let openAi = %*{
+      "model": "claude-sonnet-5-5",
+      "messages": [{"role": "user", "content": "hi"}],
+      "max_tokens": 65536,
+      "reasoning_effort": "high"}
+    let j = parseJson(anthropicBody(sonnet55, openAi))
+    check j{"thinking"}{"type"}.getStr == "adaptive"
+    check j{"thinking"}{"block_binding"}{"prefix_mismatch_behavior"}.getStr ==
+      "drop_block"
+    check j{"output_config"}{"effort"}.getStr == "high"
 
   test "opus 5.5 asks for drop_block under the binding beta":
     let openAi = %*{
@@ -399,3 +437,15 @@ suite "claudecode (Claude subscription) wire":
     check requestUrl(p) == "https://api.anthropic.com/v1"
     check endpointUrl(p, responses = false, streaming = true) ==
       "https://api.anthropic.com/v1/messages"
+
+  test "claude-sonnet-5-5 is known-good for anthropic and claudecode":
+    # 1M ctx, 128k output cap, high effort default; the off knob rides
+    # between_tools (see the tests above).
+    for prov in ["anthropic", "claudecode"]:
+      check isKnownGood(Profile(name: prov & ".claude-sonnet-5-5",
+                               model: "claude-sonnet-5-5"))
+      check knownGoodContextWindow(prov, "claude-sonnet-5-5") == 1_000_000
+      check knownGoodReasonings(prov, "claude-sonnet-5-5") ==
+        @["off", "low", "medium", "high", "xhigh", "max"]
+    check maxOutputTokensFor(Profile(name: "anthropic.claude-sonnet-5-5",
+      model: "claude-sonnet-5-5")) == 131_072

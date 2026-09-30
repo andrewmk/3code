@@ -225,7 +225,8 @@ suite "prompts: setup — minimax":
 suite "prompts: setup — gpt":
   test "older and current GPT models share the verification contract":
     let shared = setup(Profile(family: "gpt", model: "gpt-4o-mini"))
-    for model in ["gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"]:
+    for model in ["gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
+                   "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]:
       let current = setup(Profile(family: "gpt", model: model))
       check current.prompt == shared.prompt
       check current.tools == shared.tools
@@ -339,6 +340,10 @@ suite "compact: contextWindowFor":
 
   test "gpt-6-astra returns 1050000":
     check contextWindowFor("gpt-6-astra") == 1_050_000
+
+  test "gpt-6 family returns 1050000":
+    for m in ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]:
+      check contextWindowFor(m) == 1_050_000
 
   test "gpt-4 returns 128000":
     check contextWindowFor("gpt-4o") == 128_000

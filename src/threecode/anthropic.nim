@@ -29,7 +29,10 @@
 ## (`thinking: {type: "adaptive"}` steered by `output_config.effort`,
 ## low/medium/high/xhigh/max); thinking is on by default for 5.x, and
 ## Fable/Mythos and Opus 5.5+ reject `{type: "disabled"}` outright, so
-## the "off" knob maps to plain adaptive there. Claude 4.5 and earlier
+## the "off" knob maps to plain adaptive there. Sonnet 5.5 takes
+## `{type: "between_tools"}` instead of "disabled" (up-front thinking
+## off, progress notes between tool calls still arrive). Claude 4.5
+## and earlier
 ## take the legacy manual mode (`{type: "enabled", budget_tokens}`),
 ## which 4.7+ rejects. The `:reasoning` knob maps onto whichever
 ## surface the model string says.
@@ -123,12 +126,20 @@ proc rejectsThinkingDisabled*(model: string): bool =
   if nums.len == 0: return true
   nums[0] >= 6 or (nums[0] == 5 and nums.len > 1 and nums[1] >= 5)
 
+proc takesBetweenTools*(model: string): bool =
+  ## Sonnet 5.5 replaces "disabled" with "between_tools": the lowest
+  ## thinking setting, valid only at low/medium/high effort and with
+  ## no other thinking field (no display, no block_binding). Progress
+  ## notes between tool calls still arrive as thinking blocks.
+  "sonnet-5-5" in model.toLowerAscii
+
 proc runsPrefixCheck*(model: string): bool =
   ## Models that bind thinking blocks to the conversation prefix and
-  ## reject a stale block by default (Fable/Mythos 5.1+, Opus 5.5+).
-  ## Only these need the drop_block safety net; earlier models never
-  ## run the check.
+  ## reject a stale block by default (Fable/Mythos 5.1+, Opus 5.5+,
+  ## Sonnet 5.5). Only these need the drop_block safety net; earlier
+  ## models never run the check.
   let m = model.toLowerAscii
+  if takesBetweenTools(m): return true
   if "fable" in m or "mythos" in m: return true
   if "opus" notin m: return false
   var nums: seq[int]
@@ -144,8 +155,14 @@ proc thinkingConfig(model, effort: string): tuple[thinking: JsonNode, effortCfg:
   ## value placed there by `applyClaudeReasoning`.
   let gen = claudeGeneration(model)
   if effort == "off" or effort == "":
-    if effort == "off" and gen != cgManual and not rejectsThinkingDisabled(model):
-      return (%*{"type": "disabled"}, nil)
+    if effort == "off" and gen != cgManual:
+      if takesBetweenTools(model):
+        # Sonnet 5.5: between_tools is the off setting; effort must stay
+        # within low/medium/high (xhigh/max 400 with it), so no effort
+        # override rides along.
+        return (%*{"type": "between_tools"}, nil)
+      if not rejectsThinkingDisabled(model):
+        return (%*{"type": "disabled"}, nil)
     return (nil, nil)
   # display "summarized": 4.6+/5.x default to omitted thinking text; the
   # harness has a reasoning ticker, so ask for the summary.
@@ -173,7 +190,9 @@ proc budgetOf(thinking: JsonNode): int =
 proc thinkingActive(thinking: JsonNode): bool =
   ## Thinking is off exactly when the config says "disabled" or is
   ## absent after a degrade; block replay follows this so a disabled
-  ## request never carries thinking blocks.
+  ## request never carries thinking blocks. between_tools keeps replay
+  ## on: its progress-update blocks between tool calls must ride back
+  ## with the assistant turn like any other thinking block.
   if thinking == nil or thinking.kind != JObject: return false
   thinking{"type"}.getStr != "disabled"
 

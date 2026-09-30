@@ -258,10 +258,12 @@ natively: the system prompt as a top-level field, tool calls as typed content
 blocks, and adaptive thinking with effort levels (`:reasoning` low / medium /
 high / xhigh / max). Claude 5.x always thinks — `off` is not offered on Opus
 5.5 and Fable, where Anthropic rejects it — and thinking summaries stream to
-the reasoning ticker. Thinking blocks replay across tool loops with their
-signatures, so long agentic runs keep their reasoning; the models that bind
-thinking to the conversation (Opus 5.5, Fable) ride Anthropic's drop-block
-fallback so an interrupted or compacted history degrades instead of failing.
+the reasoning ticker. Sonnet 5.5 turns off up-front thinking with
+`between_tools` instead of `disabled`. Thinking blocks replay across tool
+loops with their signatures, so long agentic runs keep their reasoning; the
+models that bind thinking to the conversation (Opus 5.5, Sonnet 5.5, Fable)
+ride Anthropic's drop-block fallback so an interrupted or compacted history
+degrades instead of failing.
 
 A Claude Pro or Max subscription works like the ChatGPT login: enter
 `claudecode` in the provider wizard and finish the browser OAuth on
@@ -764,7 +766,8 @@ The valid values depend on the model:
 - GPT-5.1 and later add `none`
 - GPT-5.4 and GPT-5.5 add `xhigh`
 - GPT-5.6 adds `max` and does not use `minimal`
-- GPT-6 Astra uses `low`, `medium`, `high`, `xhigh`, and `max`; thinking cannot be disabled
+- GPT-6 Astra and GPT-6.1 Sol use `low`, `medium`, `high`, `xhigh`, and `max`; thinking cannot be disabled
+- GPT-6 Sol and GPT-6 Luna use `none`, `low`, `medium`, `high`, `xhigh`, and `max`
 - GPT-5.5 Pro uses `medium`, `high`, and `xhigh`; GPT-5 Pro uses `high`
 - GPT-4.x has no reasoning setting
 

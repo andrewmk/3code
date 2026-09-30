@@ -1,5 +1,5 @@
 import std/[json, options, os, osproc, strutils, unittest]
-import threecode/[api, config, prompts, types]
+import threecode/[api, config, modelname, prompts, types]
 import stub_helpers
 
 # Subprocess probes compile a small `probe.nim` and exec it. On Windows the
@@ -511,15 +511,24 @@ suite "api request shaping":
       @["none", "low", "medium", "high", "xhigh", "max"]
     check knownGoodReasonings("openai", "gpt-5.6-luna") ==
       @["none", "low", "medium", "high", "xhigh", "max"]
-    # gpt-6-astra drops "none": reasoning cannot be disabled.
+    # gpt-6-astra and gpt-6.1-sol drop "none": reasoning cannot be
+    # disabled; gpt-6-sol/luna keep it.
     check knownGoodReasonings("openai", "gpt-6-astra") ==
       @["low", "medium", "high", "xhigh", "max"]
+    check knownGoodReasonings("openai", "gpt-6.1-sol") ==
+      @["low", "medium", "high", "xhigh", "max"]
+    check knownGoodReasonings("openai", "gpt-6-sol") ==
+      @["none", "low", "medium", "high", "xhigh", "max"]
+    check knownGoodReasonings("openai", "gpt-6-luna") ==
+      @["none", "low", "medium", "high", "xhigh", "max"]
     check knownGoodReasonings("openai", "gpt-4o") == newSeq[string](0)
     check knownGoodReasonings("openai", "gpt-4.1") == newSeq[string](0)
     # chatgpt (Codex backend) resolves to the openai catalog.
     check knownGoodReasonings("chatgpt", "gpt-5.6-sol") ==
       @["none", "low", "medium", "high", "xhigh", "max"]
     check knownGoodReasonings("chatgpt", "gpt-6-astra") ==
+      @["low", "medium", "high", "xhigh", "max"]
+    check knownGoodReasonings("chatgpt", "gpt-6.1-sol") ==
       @["low", "medium", "high", "xhigh", "max"]
 
   test "openai chat body sends reasoning_effort passthrough":
@@ -576,6 +585,40 @@ suite "api request shaping":
     check knownGoodReasonings("openrouter", "x-ai/grok-4.20") == @["off", "low", "medium", "high"]
     check knownGoodReasonings("xai", "grok-build-0.1") == @["low", "medium", "high"]
     check knownGoodReasonings("openrouter", "x-ai/grok-4.5") == @["low", "medium", "high"]
+
+  test "gpt-6 sol/luna and gpt-6.1 sol are known-good for openai and chatgpt":
+    # Same 1.05M context and 128k architectural output cap as Astra;
+    # the subscription twin resolves through the openai catalog.
+    for model in ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]:
+      check isKnownGood(Profile(name: "openai." & model, model: model))
+      check isKnownGood(Profile(name: "chatgpt." & model, model: model))
+      check knownGoodContextWindow("openai", model) == 1_050_000
+      check knownGoodContextWindow("chatgpt", model) == 1_050_000
+      check maxOutputTokensFor(Profile(name: "openai." & model,
+        model: model)) == 128_000
+    check knownGoodGeneration("openai", "gpt-6-sol").maxTokens == 8192
+    check knownGoodGeneration("openai", "gpt-6-luna").maxTokens == 4096
+
+  test "gpt-6 sol/luna/6.1 sol are known-good on the third-party gateways":
+    # openrouter, opencode, nanogpt, venice (dash-flattened ids there).
+    check isKnownGood(Profile(name: "openrouter.openai/gpt-6-sol",
+                              model: "openai/gpt-6-sol"))
+    check isKnownGood(Profile(name: "openrouter.openai/gpt-6-luna",
+                              model: "openai/gpt-6-luna"))
+    check isKnownGood(Profile(name: "openrouter.openai/gpt-6.1-sol",
+                              model: "openai/gpt-6.1-sol"))
+    check isKnownGood(Profile(name: "opencode.gpt-6-sol", model: "gpt-6-sol"))
+    check isKnownGood(Profile(name: "opencode.gpt-6-luna", model: "gpt-6-luna"))
+    check isKnownGood(Profile(name: "opencode.gpt-6.1-sol", model: "gpt-6.1-sol"))
+    check isKnownGood(Profile(name: "nanogpt.openai/gpt-6-sol",
+                              model: "openai/gpt-6-sol"))
+    check isKnownGood(Profile(name: "venice.openai-gpt-6-sol",
+                              model: "openai-gpt-6-sol"))
+    check isKnownGood(Profile(name: "venice.openai-gpt-61-sol",
+                              model: "openai-gpt-61-sol"))
+    # venice flattens the dot: 61 stays glued like its 56 rows, so the
+    # normalized form keeps the two-digit version
+    check normalizeModelName("openai-gpt-61-sol") == "gpt-61-sol"
 
   test "gpt-6-astra is known-good for openai and chatgpt":
     # The subscription twin resolves through the openai catalog; same

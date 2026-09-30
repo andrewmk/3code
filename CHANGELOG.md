@@ -2,6 +2,17 @@ Changelog
 
 **Unreleased**
 
+- **Claude Sonnet 5.5, GPT-6 Sol / Luna, GPT-6.1 Sol.** `claude-sonnet-5-5`
+  is known-good for `anthropic` (API key) and `claudecode` (Pro/Max
+  subscription): 1M context, 128k output, adaptive thinking with effort
+  low..max. Its `off` knob maps to Anthropic's new `between_tools`
+  setting (Sonnet 5.5 rejects `disabled`), and its thinking blocks ride
+  the drop_block fallback like Opus 5.5's. `gpt-6-sol`, `gpt-6-luna`,
+  and `gpt-6.1-sol` are known-good for `openai` and `chatgpt` plus the
+  openrouter / opencode / nanogpt / venice gateways: 1.05M context,
+  128k output cap; Sol/Luna keep `none` on the effort ladder, 6.1 Sol
+  always thinks (low..max like Astra).
+
 - **The occasional "submit deletes the line above the prompt" is fixed.**
   A multi-row draft in the buffered mid-turn editor (history recall,
   shift+enter, typing during the stream) made the answer-start erase

@@ -179,6 +179,14 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     ("openai", "gpt-5.6-terra", "gpt", "", "5.6-terra", "medium", 0.2, 4096, tbNone, false, 400_000, false),
     ("openai", "gpt-5.6-luna", "gpt", "", "5.6-luna", "medium", 0.2, 4096, tbNone, false, 400_000, false),
     ("openai", "gpt-6-astra", "gpt", "", "6-astra", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    # GPT-6 Sol / Luna (Sep 22) and GPT-6.1 Sol (Sep 29): same 1.05M
+    # context and 128k output cap as Astra. Sol/Luna keep `none` on
+    # their effort ladder; 6.1 Sol drops it (always thinks, like
+    # Astra). First-party rows ride /responses, so the Chat
+    # Completions tools-only-at-none caveat never bites here.
+    ("openai", "gpt-6-sol", "gpt", "", "6-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("openai", "gpt-6-luna", "gpt", "", "6-luna", "medium", 0.2, 4096, tbNone, false, 1_050_000, false),
+    ("openai", "gpt-6.1-sol", "gpt", "", "6.1-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
 
     # deepseek. V4.1 Flash (2026-09-10): first-party canonical id is
     # `deepseek-flash` (the v4-flash / v4-flash-vision-exp ids now route
@@ -257,6 +265,13 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     # drop_block so a stale block degrades instead of 400ing.
     ("anthropic", "claude-opus-5-5", "claude", "opus", "5-5", "medium", -1.0, 65536, tbAllTurns, false, 1_000_000, false),
     ("anthropic", "claude-sonnet-5", "claude", "sonnet", "5", "high", -1.0, 65536, tbAllTurns, false, 1_000_000, false),
+    # Sonnet 5.5 (Sep 28): 1M ctx, 128k out, adaptive thinking always
+    # on, effort low..max (API default high). `disabled` 400s; the off
+    # knob maps to `between_tools` (see anthropic.nim), which is only
+    # valid at low/medium/high and takes no block_binding. Thinking
+    # blocks are prefix-checked by default on accounts created after
+    # 2026-08-31, so it rides drop_block like Opus 5.5+.
+    ("anthropic", "claude-sonnet-5-5", "claude", "sonnet", "5-5", "high", -1.0, 65536, tbAllTurns, false, 1_000_000, false),
     ("anthropic", "claude-fable-5-1", "claude", "fable", "5-1", "high", -1.0, 65536, tbAllTurns, false, 1_000_000, false),
     ("anthropic", "claude-haiku-4-5", "claude", "haiku", "4-5", "low", -1.0, 32768, tbAllTurns, false, 200_000, false),
 
@@ -519,6 +534,9 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     ("venice", "openai-gpt-56-luna", "gpt", "", "5.6-luna", "medium", 0.2, 4096, tbNone, false, 400_000, false),
     ("venice", "openai-gpt-56-sol", "gpt", "", "5.6-sol", "medium", 0.2, 8192, tbNone, false, 400_000, false),
     ("venice", "openai-gpt-56-terra", "gpt", "", "5.6-terra", "medium", 0.2, 4096, tbNone, false, 400_000, false),
+    ("venice", "openai-gpt-6-sol", "gpt", "", "6-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("venice", "openai-gpt-6-luna", "gpt", "", "6-luna", "medium", 0.2, 4096, tbNone, false, 1_050_000, false),
+    ("venice", "openai-gpt-61-sol", "gpt", "", "6.1-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
     ("venice", "openai-gpt-oss-120b", "gpt-oss", "", "120b", "medium", 0.2, 8192, tbNone, false, 131_072, false),
     ("venice", "qwen-3-6-plus", "qwen", "3.6", "plus", "on", 0.2, 8192, tbNone, false, 262_144, false),
     ("venice", "qwen-3-7-max", "qwen", "3.7", "max", "on", 0.2, 8192, tbNone, false, 262_144, false),
@@ -597,6 +615,9 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     ("openrouter", "openai/gpt-5.6-luna", "gpt", "", "5.6-luna", "medium", 0.2, 4096, tbNone, false, 400_000, false),
     ("openrouter", "openai/gpt-5.6-sol", "gpt", "", "5.6-sol", "medium", 0.2, 8192, tbNone, false, 400_000, false),
     ("openrouter", "openai/gpt-5.6-terra", "gpt", "", "5.6-terra", "medium", 0.2, 4096, tbNone, false, 400_000, false),
+    ("openrouter", "openai/gpt-6-sol", "gpt", "", "6-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("openrouter", "openai/gpt-6-luna", "gpt", "", "6-luna", "medium", 0.2, 4096, tbNone, false, 1_050_000, false),
+    ("openrouter", "openai/gpt-6.1-sol", "gpt", "", "6.1-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
     ("openrouter", "openai/o1", "gpt", "", "o1", "medium", 0.2, 8192, tbNone, false, 200_000, false),
     ("openrouter", "openai/o3", "gpt", "", "o3", "medium", 0.2, 8192, tbNone, false, 200_000, false),
     ("openrouter", "openai/o3-mini", "gpt", "", "o3-mini", "medium", 0.2, 8192, tbNone, false, 200_000, false),
@@ -708,6 +729,9 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     ("opencode", "gpt-5.6-luna", "gpt", "", "5.6-luna", "medium", 0.2, 4096, tbNone, false, 400_000, false),
     ("opencode", "gpt-5.6-sol", "gpt", "", "5.6-sol", "medium", 0.2, 8192, tbNone, false, 400_000, false),
     ("opencode", "gpt-5.6-terra", "gpt", "", "5.6-terra", "medium", 0.2, 4096, tbNone, false, 400_000, false),
+    ("opencode", "gpt-6-sol", "gpt", "", "6-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("opencode", "gpt-6-luna", "gpt", "", "6-luna", "medium", 0.2, 4096, tbNone, false, 1_050_000, false),
+    ("opencode", "gpt-6.1-sol", "gpt", "", "6.1-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
     ("opencode", "grok-4.7", "grok", "4", "7", "high", 0.2, 8192, tbNone, false, 500_000, false),
     ("opencode", "grok-4.6", "grok", "4", "6", "high", 0.2, 8192, tbNone, false, 500_000, false),
     ("opencode", "grok-4.5", "grok", "4", "5", "high", 0.2, 8192, tbNone, false, 500_000, false),
@@ -961,6 +985,9 @@ const KnownGoodCombos*: seq[KnownGoodCombo] = @[
     ("nanogpt", "mistralai/mistral-large", "mistral", "", "large", "", 0.2, 8192, tbNone, false, 262_144, false),
     ("nanogpt", "mistralai/mistral-medium-3.5", "mistral", "", "medium", "high", 0.7, 8192, tbNone, false, 262_144, false),
     ("nanogpt", "openai/gpt-6-astra", "gpt", "", "6-astra", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("nanogpt", "openai/gpt-6-sol", "gpt", "", "6-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
+    ("nanogpt", "openai/gpt-6-luna", "gpt", "", "6-luna", "medium", 0.2, 4096, tbNone, false, 1_050_000, false),
+    ("nanogpt", "openai/gpt-6.1-sol", "gpt", "", "6.1-sol", "medium", 0.2, 8192, tbNone, false, 1_050_000, false),
     ("nanogpt", "qwen/qwen-plus", "qwen", "3", "plus", "on", 0.2, 8192, tbNone, false, 1_000_000, false),
     ("nanogpt", "qwen/qwen3-14b", "qwen", "3", "14b", "on", 0.2, 4096, tbNone, false, 131_072, false),
     ("nanogpt", "qwen/qwen3-235b-a22b", "qwen", "3", "235b-a22b", "on", 0.2, 8192, tbNone, false, 262_144, false),
@@ -3648,14 +3675,14 @@ proc maxOutputTokensFor*(p: Profile): int =
     return 131_072
   if "glm-5.3" in m: return 131_072
   if "deepseek" in m and "v4" in m: return 384_000
-  if "gpt-6-astra" in m: return 128_000
+  if "gpt-6" in m: return 128_000
   if "gemini-3" in m: return 65_536
   let kg = knownGoodContextWindow(p)
   if kg > 0: return kg
   if "kimi-k2" in m or "qwen3-coder" in m or "qwen3_coder" in m: 262_144
   elif "qwen" in m: 128_000
   elif "claude" in m: 200_000
-  elif "gpt-6-astra" in m: 1_050_000
+  elif "gpt-6" in m: 1_050_000
   elif "gpt-5" in m: 400_000
   elif "gpt-4" in m or "o1" in m or "o3" in m or "o4" in m: 200_000
   elif "deepseek" in m: 128_000
@@ -3696,8 +3723,10 @@ proc knownGoodReasonings*(provider, model: string): seq[string] =
         if combo.variant == "5.5-pro": return @["medium", "high", "xhigh"]
         if combo.variant.startsWith("5.6"):
           return @["none", "low", "medium", "high", "xhigh", "max"]
-        if combo.variant == "6-astra":
+        if combo.variant == "6-astra" or combo.variant == "6.1-sol":
           return @["low", "medium", "high", "xhigh", "max"]
+        if combo.variant in ["6-sol", "6-luna"]:
+          return @["none", "low", "medium", "high", "xhigh", "max"]
         if combo.variant.startsWith("5.4") or combo.variant.startsWith("5.5"):
           return @["none", "low", "medium", "high", "xhigh"]
         if combo.variant in ["5", "5-mini", "5-nano"]:
@@ -3761,7 +3790,8 @@ proc knownGoodReasonings*(provider, model: string): seq[string] =
         # anthropic.nim): adaptive effort low/medium/high/xhigh/max on
         # the 4.6+/5.x generations (the legacy budget mode on Haiku 4.5
         # maps off/low/medium/high to a token budget). Opus 5.5+ and
-        # Fable/Mythos cannot disable thinking at all; Sonnet 5 can.
+        # Fable/Mythos cannot disable thinking at all; Sonnet 5 and
+        # 5.5 can (5.5 via between_tools).
         if rejectsThinkingDisabled(combo.model):
           return @["low", "medium", "high", "xhigh", "max"]
         if claudeGeneration(combo.model) == cgManual:
