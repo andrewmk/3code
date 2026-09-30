@@ -2,6 +2,25 @@ Changelog
 
 **Unreleased**
 
+- **Flail guard: streak signal no longer flags verification retries.**
+  The stuck-streak signal read a long same-tool run of near-identical
+  calls as a doom loop even when the run was legitimate
+  output-capture debugging: retrying one pytest command with cycling
+  capture tails (`| tail -2`, `| grep -E 'passed|failed' | tail -2`,
+  redirect-to-file) tokenizes to the same subject set, because the
+  varying tails fall under the 6-char token minimum, so a converging
+  retry sequence and a cosmetic-variant doom loop were shape-identical
+  (20260930 astropy session; escalations landed mid-diagnosis and the
+  step-2 message forbade the retry the work needed). The ring behind
+  the signal now restarts on a subject change: a call sharing no
+  distinctive token with the ring's consensus (the tokens a majority
+  of ring members carry, so prose `#` comments cannot bridge a subject
+  change) empties it. An uninterrupted run of near-identical calls
+  still fills the ring and still escalates; interleaved genuinely
+  different work no longer accumulates into one. Replayed against
+  400 recorded sessions: the mergepdf doom loop, ssh-boilerplate loop
+  regions, and spaced failed repeats all still fire.
+
 - **`3code provider` subcommand.** Non-interactive provider management
   for scripts and keyless first setup: `provider add <name|url|api-key>
   [--key KEY] [--models "a b c"]`, `provider models <name> <model...>`

@@ -51,7 +51,10 @@ type
     ##    Jaccard >= `FlailStreakJaccard`) or a tight cluster of
     ##    `FlailStreakCluster` near-duplicates. Sharing one keyword is
     ##    deliberately not enough: recorded sessions show varied work on one
-    ##    project or host shares boilerplate tokens across every call.
+    ##    project or host shares boilerplate tokens across every call. A call
+    ##    sharing no distinctive token with the ring's consensus is a subject
+    ##    change, not a cosmetic variant, and empties the ring: an
+    ##    uninterrupted run of near-duplicates is required to build one.
     ##
     ## Recovery uses a graduated ladder of injected messages, because field
     ## reports on GLM 5.x loops (zai-org/GLM-5#116) show a plain "be careful"
@@ -227,6 +230,20 @@ proc streakRingStuck(ring: seq[HashSet[string]]): bool =
     if near + 1 > cluster: cluster = near + 1
   total / pairs.float >= FlailStreakJaccard or cluster >= FlailStreakCluster
 
+proc ringConsensus(ring: seq[HashSet[string]]): HashSet[string] =
+  ## Tokens carried by at least half the ring members: the subject the
+  ## current streak is about. Half rather than all so one deviation inside
+  ## a doom loop cannot erase the theme the ring is judged on, and
+  ## narration tokens (prose `#` comments baked into commands) cannot
+  ## extend the subject: a comment mentioning "version" on a `git
+  ## describe` call does not make that call about the pytest ring it
+  ## interrupted (20260930 astropy session).
+  var counts: CountTable[string]
+  for s in ring:
+    for t in s: counts.inc(t)
+  for t, n in counts:
+    if 2 * n >= ring.len: result.incl t
+
 proc countInWindow(det: FlailDetector, fp: string): int =
   for w in det.window:
     if w == fp: inc result
@@ -252,13 +269,20 @@ proc observeCall*(det: var FlailDetector, name, argsStr: string): FlailVerdict =
 
   # Streak signal state: a ring of the last FlailStreakMin same-tool
   # calls and the distinctive tokens each carried. A switch to a different
-  # tool empties the ring. The signal fires when the ring is mostly the
-  # same call (see streakRingStuck). A sliding window (not a shrinking run
-  # intersection) so one healthy deviation inside a doom loop does not
-  # permanently disarm it. The ring only starts filling at FlailStreakArm
-  # calls into the run, so a healthy burst of same-tool iteration
-  # (compile, read, tweak, test) shorter than that never arms the signal
-  # at all.
+  # tool empties the ring; so does a subject change: a call sharing no
+  # distinctive token with the ring's consensus is genuinely different
+  # work, not a cosmetic variant of the ring's theme, and the ring
+  # restarts empty (20260930 astropy session: pytest retries cycling
+  # capture tails interleaved with version-file reads read as one
+  # near-duplicate cluster because the varying tails fall under the token
+  # minimum). Restarting, not disarming: the ring refills from the next
+  # same-theme call, so an uninterrupted doom loop still fires, only
+  # delayed while genuinely different work keeps interrupting it. Calls
+  # with no distinctive tokens at all are inert: they neither fill nor
+  # purge, so a doom loop sprinkling `ls` between probes cannot dodge the
+  # signal that way. The ring only starts filling at FlailStreakArm calls
+  # into the run, so a healthy burst of same-tool iteration (compile,
+  # read, tweak, test) shorter than that never arms the signal at all.
   let toks = distinctiveTokens(argsStr)
   if det.streakName != name:
     det.streakName = name
@@ -266,9 +290,14 @@ proc observeCall*(det: var FlailDetector, name, argsStr: string): FlailVerdict =
     det.streakTokens = @[]
   inc det.streakLen
   if det.streakLen >= FlailStreakArm:
-    det.streakTokens.add toks
-    if det.streakTokens.len > FlailStreakMin:
-      det.streakTokens.delete 0
+    if toks.len > 0:
+      if det.streakTokens.len > 0 and
+          (ringConsensus(det.streakTokens) * toks).len == 0:
+        det.streakTokens = @[]
+      else:
+        det.streakTokens.add toks
+        if det.streakTokens.len > FlailStreakMin:
+          det.streakTokens.delete 0
   let stuckStreak = det.streakTokens.len == FlailStreakMin and
     streakRingStuck(det.streakTokens)
 

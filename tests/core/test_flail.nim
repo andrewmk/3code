@@ -244,19 +244,31 @@ suite "flail detector":
     check verdicts[firstFire] == fvEscalate
     check fvAbort in verdicts[verdicts.len - 3 .. ^1]
 
-  test "a genuinely different call breaks the streak":
+  test "a genuinely different call purges the streak ring":
     var det: FlailDetector
     for i in 1 .. FlailStreakArm:
       let c = "sed -n '" & $i & ",30p' src/module" & $i & ".nim; wc -l src/module" & $i & ".nim"
       check det.observeCall("bash", "{\"command\":" & escapeJson(c) & "}") == fvOk
       det.noteResult("bash", "{\"command\":" & escapeJson(c) & "}", true)
-    # The odd call enters the sliding ring and dilutes the ring-wide
-    # average, but does not disarm the signal: a tight near-duplicate
-    # cluster among the remaining ring members still fires.
+    # The odd call shares no distinctive token with the ring's consensus
+    # (a compile, not a file read), so the subject changed: the ring
+    # empties instead of absorbing it. The evidence restarts, it is not
+    # disarmed - an uninterrupted near-duplicate run refills the ring from
+    # the next call and still fires, so a doom loop that deviates once
+    # only delays the flag.
     let other = "nim c -o:tool tools/thing.nim"
     check det.observeCall("bash", "{\"command\":" & escapeJson(other) & "}") == fvOk
-    check "src/module#.nim" notin det.streakTokens[^1]
-    check "o:tool" in det.streakTokens[^1]
+    check det.streakTokens.len == 0
+    let variants = [
+      "rg -n \"deadline\" src/engine.nim | head -20",
+      "rg -n \"deadline\" src/engine.nim | head -40",
+      "rg -n \"deadline\" src/engine.nim | tail -20"]
+    for i in 1 .. FlailStreakMin:
+      let v = det.observeCall("bash", "{\"command\":" & escapeJson(variants[(i - 1) mod 3]) & "}")
+      if i < FlailStreakMin:
+        check v == fvOk
+      else:
+        check v == fvEscalate
 
   test "short burst of same-prefix command variants does not flag":
     # Regression from 20260905T000324.3log: while debugging an image
@@ -339,6 +351,48 @@ suite "flail detector":
       check v == fvOk
     check verdicts[firstFire] == fvEscalate
     check fvAbort in verdicts[^3 .. ^1]
+
+  test "capture-retry verification with interleaved reads stays quiet":
+    # Regression, the shape of the 20260930 astropy session (report.md):
+    # a long bash run retrying one pytest command with cycling capture
+    # tails - the varying part (tail -2 vs tail -3 vs tail -8) is under
+    # the 6-char token minimum, so every retry tokenizes to the same
+    # subject set - interleaved with reads of a different file. The
+    # interleaved reads change the subject, so the ring keeps restarting
+    # and the converging retries never read as an emission-stuck loop.
+    var det: FlailDetector
+    template bashCmd(c: string) =
+      check det.observeCall("bash", "{\"command\":" & escapeJson(c) & "}") == fvOk
+      det.noteResult("bash", "{\"command\":" & escapeJson(c) & "}", true)
+    bashCmd "cd /tmp/asttest && timeout 300 /tmp/venvtest-310/bin/pip install --quiet -e . 2>&1 | tail -2; echo \"exit: $?\""
+    bashCmd "cd /tmp/asttest && /tmp/venvtest-310/bin/pip install --quiet numpy pytest pytest-doctestplus 2>&1 | tail -1"
+    const tails = [
+      " 2>&1 | tail -3",
+      " 2>&1 | grep -E \"passed|failed|error\" | tail -2",
+      " 2>&1 | tail -8",
+      " 2>&1 | grep -E \"^[0-9]+ (passed|failed)\" | tail -2",
+      " > /tmp/asttest_out.txt 2>&1; echo \"rc=$?\"; wc -l /tmp/asttest_out.txt; tail -5 /tmp/asttest_out.txt"]
+    for i in 0 ..< 15:
+      bashCmd "cd /tmp/asttest && timeout 180 /tmp/venvtest-310/bin/python -m pytest astropy/units/tests/test_format.py -q" &
+        tails[i mod tails.len]
+      if (i + 1) mod 4 == 0:
+        bashCmd "git describe --tags 2>&1 | head -1; ls astropy/version.py && head -15 astropy/version.py"
+    check det.escalations == 0
+
+  test "narration does not extend the ring's subject":
+    # The other half of the astropy fix: the interleaved `git describe`
+    # call carried a prose comment about version detection. Against the
+    # union of all ring tokens that prose would have bridged the subject
+    # change; only tokens the ring's majority carries count as its
+    # subject, so the call still purges the ring.
+    var det: FlailDetector
+    template bashCmd(c: string) =
+      check det.observeCall("bash", "{\"command\":" & escapeJson(c) & "}") == fvOk
+      det.noteResult("bash", "{\"command\":" & escapeJson(c) & "}", true)
+    for i in 1 .. FlailStreakArm + 3:
+      bashCmd "cd /tmp/asttest && timeout 180 /tmp/venvtest-310/bin/python -m pytest astropy/units/tests/test_format.py -q 2>&1 | tail -" & $i
+    bashCmd "cd /tmp/asttest && # astropy's version comes from git tags, which the ref strip deletes\ngit describe --tags 2>&1 | head -1; ls astropy/version.py && head -15 astropy/version.py"
+    check det.streakTokens.len == 0
 
   test "ssh session with varied remote commands never trips the streak signal":
     # Mirrors the false positive from session 20260909T213716-2ICaadgQ:
