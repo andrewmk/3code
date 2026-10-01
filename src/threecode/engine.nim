@@ -219,7 +219,8 @@ proc editorSig(ed: var minline.LineEditor): string =
   ## signature of every footer paint.
   ed.line.text & "\x1f" & $ed.line.position & "\x1f" & ed.renderSuffix &
     "\x1f" & $ed.renderSuffixCursor & "\x1f" & $ed.pendingCaret & "\x1f" &
-    ed.prompt & "\x1f" & ed.contPrompt & "\x1f" & $ed.width
+    ed.prompt & "\x1f" & ed.contPrompt & "\x1f" & $ed.width & "\x1f" &
+    $ed.selAnchor
 
 type
   VolatileRowKind* = enum

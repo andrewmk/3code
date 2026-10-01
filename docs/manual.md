@@ -443,6 +443,9 @@ Useful input keys:
 | Ctrl+Arrow | move by word |
 | Ctrl+U | clear the input buffer |
 | Ctrl+W | delete the previous word |
+| Ctrl+K | delete to end of line |
+| Alt+D / Ctrl+Delete | delete the next word |
+| Ctrl+T | transpose characters around the cursor |
 | Ctrl+L | clear the screen |
 | Alt+E | edit the input buffer in $VISUAL/$EDITOR |
 | Ctrl+X Ctrl+E | same (emacs edit-and-execute-command) |
@@ -457,6 +460,27 @@ Pasting behaves the way you want: a multi-line paste stays one draft instead
 of submitting on the first embedded newline, so you can paste a code block,
 edit it, and submit with Enter. `:!` and `@file` prefixes still work inside
 a pasted draft.
+
+### Selecting text
+
+The input buffer is a real text widget: hold Shift with the arrows (or
+Home/End, Ctrl+Arrow for words, Ctrl+Shift+Home/End for the whole buffer)
+and the range highlights in reverse video. Then:
+
+| key | action |
+| --- | --- |
+| Ctrl+X | cut the selection (without one, Ctrl+X is the emacs prefix) |
+| Alt+W | copy the selection |
+| Ctrl+V | paste from the system clipboard |
+| Ctrl+Y | paste the last cut/copied text (kill ring) |
+
+Any edit (typing, backspace, delete) replaces the selection, and any
+plain cursor motion drops it, the way every desktop text field behaves.
+Copy and cut also publish to the system clipboard through OSC 52, which
+most modern terminals honor (xterm needs `allowWindowOps`); paste reads
+the clipboard through the platform helper (`pbpaste`, `wl-paste`,
+`xclip`, `xsel`, or PowerShell) and falls back to the kill ring when the
+platform has none.
 
 ### Rebinding keys
 
@@ -484,12 +508,20 @@ suspend =
 The commands: `cancel`, `clear`, `quit-if-empty`, `home`, `end`, `left`,
 `right`, `word-left`, `word-right`, `up`, `down`, `history-previous`,
 `history-next`, `backspace`, `delete`, `insert`, `delete-word-left`,
-`delete-to-boundary-left`, `clear-screen`, `suspend`, `complete`,
-`reverse-complete`, `edit-in-editor`, `insert-newline`.
+`delete-to-boundary-left`, `delete-word-right`, `delete-to-boundary-right`,
+`delete-to-eol`, `delete-to-bol`, `clear-screen`, `suspend`, `complete`,
+`reverse-complete`, `edit-in-editor`, `insert-newline`, `buffer-start`,
+`buffer-end`, `select-left`, `select-right`, `select-up`, `select-down`,
+`select-home`, `select-end`, `select-word-left`, `select-word-right`,
+`select-all`, `select-buffer-start`, `select-buffer-end`, `cut`, `copy`,
+`paste`, `yank`, `transpose-chars`.
 
 Key names look like `Ctrl+C`, `Alt+F`, `ShiftTab`, `Home`, `End`, `Up`,
 `Down`, `Left`, `Right`, `Backspace`, `Delete`, `Insert`, `Tab`, or `ESC`.
-`Ctrl` chords are case-insensitive (`CtrlC` and `ctrl+c` are the same key),
+Modified navigation keys take a prefix: `ShiftLeft`, `ShiftHome`,
+`CtrlLeft`, `CtrlRight`, `CtrlDelete`, `CtrlShiftLeft`, `CtrlShiftEnd`,
+and so on across the arrows, Home, End, and Delete. `Ctrl` chords are
+case-insensitive (`CtrlC` and `ctrl+c` are the same key),
 and `Double` requires two quick presses, as in `DoubleESC` or `DoubleCtrlC`.
 
 `:help` always shows the bindings currently in effect.

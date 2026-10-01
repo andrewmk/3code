@@ -2,6 +2,24 @@ Changelog
 
 **Unreleased**
 
+- **Keyboard text selection and standard edit ops in the prompt (#44).**
+  The input buffer is now a real text widget: Shift+Arrows / Shift+Home
+  / Shift+End extend a reverse-video selection (Ctrl+Shift+Arrows by
+  word, Ctrl+Shift+Home/End to the buffer ends), typing or any delete
+  replaces it, plain motion drops it, Ctrl+X cuts, Alt+W copies (OSC 52
+  to the system clipboard where the terminal allows), Ctrl+V pastes
+  from the system clipboard (pbpaste / wl-paste / xclip / xsel /
+  PowerShell, kill-ring fallback), Ctrl+Y yanks the last cut. New edit
+  commands: Ctrl+K delete-to-eol, Alt+D / Ctrl+Delete delete-word-right
+  (ctrl+delete used to delete the word on the LEFT), Ctrl+T transpose
+  chars, Ctrl+Left/Right word jumps are now first-class configurable
+  bindings. Every command is rebindable in `[shortcuts]`, with
+  modified-key names (ShiftLeft, CtrlShiftLeft, CtrlDelete, ...).
+  Windows enables ENABLE_VIRTUAL_TERMINAL_INPUT so the console speaks
+  the same VT key grammar as every other platform (legacy conhost
+  keeps the `_getch` pair codes); the modified-key CSI decoding and
+  selection rendering are shared verbatim.
+
 - **Flail guard: streak signal no longer flags verification retries.**
   The stuck-streak signal read a long same-tool run of near-identical
   calls as a doom loop even when the run was legitimate

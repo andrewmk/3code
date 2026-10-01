@@ -39,6 +39,7 @@ import
 import signals
 import threecode/unicodewidth as ucwidth
 import threecode/syncoutput
+import threecode/clipboard
 
 # ShortcutNames is used by config.nim to validate [shortcuts] keys.
 # Keeping the dependency acyclic: minline imports nothing from config.
@@ -66,7 +67,29 @@ const ShortcutNames* = [
   "complete",
   "reverse-complete",
   "edit-in-editor",
-  "insert-newline"
+  "insert-newline",
+  "select-left",
+  "select-right",
+  "select-up",
+  "select-down",
+  "select-home",
+  "select-end",
+  "select-word-left",
+  "select-word-right",
+  "select-all",
+  "select-buffer-start",
+  "select-buffer-end",
+  "buffer-start",
+  "buffer-end",
+  "cut",
+  "copy",
+  "paste",
+  "yank",
+  "delete-word-right",
+  "delete-to-boundary-right",
+  "delete-to-eol",
+  "delete-to-bol",
+  "transpose-chars"
 ]
 
 type KeySpec* = tuple[seqKey: string, times: int]
@@ -332,6 +355,12 @@ type
     complPrefix*: string       ## original prefix before first completion
     complMatches*: seq[string] ## current match list
     complIndex*: int           ## current match index (-1 = none)
+    selAnchor*: int            ## selection anchor byte offset; -1 = no selection
+    lastKill*: string          ## last cut/copied text, for yank
+    clipboardWrite*: proc(s: string) {.closure.}
+      ## Set by the host app: publishes `s` to the system clipboard
+      ## (OSC 52). Nil in tests and standalone use: cut/copy still
+      ## populate `lastKill` for yank, they just don't reach the OS.
   InputCancelled* = object of CatchableError
   WizardSwitched* = object of CatchableError
     ## Raised by `readLineWith` when `getCh` returns the `wizardSentinel`
@@ -637,6 +666,37 @@ template CaretCellOn*: string = CaretCellFg & "\x1b[7m"
   ## around it is always unstyled, so `CaretCellOff` restoring the DEFAULT
   ## foreground (not some saved one) keeps the row's remaining bytes plain.
 
+const SelCellOn* = "\x1b[7m"
+  ## Selection cells: plain reverse video. Unlike the caret this is not a
+  ## palette-resolved fg, so a selection reads as the terminal's own
+  ## highlight color, the same cue every other selection on the screen
+  ## (scrollback, browser) uses.
+const SelCellOff* = "\x1b[27m"
+
+proc selSliceBytes*(text: string; sp: LineSpan; selStart, selStop: int): string =
+  ## The span's slice with the byte range ``[selStart, selStop)`` reversed
+  ## for selection highlight. The range is clamped to the span; a range that
+  ## does not intersect renders the plain slice. Wide runes are kept whole:
+  ## the boundary walk extends a partial rune to its full width so a
+  ## selection never paints half a CJK cell.
+  if selStop <= sp.start or selStart >= sp.stop or selStart == selStop:
+    return text[sp.start ..< sp.stop]
+  var a = max(selStart, sp.start)
+  var b = min(selStop, sp.stop)
+  # Keep whole runes at both boundaries.
+  while a > sp.start and a < text.len and (byte(text[a]) and 0xC0'u8) == 0x80'u8:
+    dec a
+  while b < sp.stop and b < text.len and (byte(text[b]) and 0xC0'u8) == 0x80'u8:
+    inc b
+  result = ""
+  if a > sp.start:
+    result.add text[sp.start ..< a]
+  result.add SelCellOn
+  result.add text[a ..< b]
+  result.add SelCellOff
+  if b < sp.stop:
+    result.add text[b ..< sp.stop]
+
 proc caretSliceBytes*(text: string; sp: LineSpan; caretAt: int;
                        width: int): string =
   ## The span's slice ``text[sp.start ..< sp.stop]`` with the drawn caret
@@ -672,6 +732,52 @@ proc caretSliceBytes*(text: string; sp: LineSpan; caretAt: int;
     text[caretAt ..< caretAt + rl] & CaretCellOff &
     text[caretAt + rl ..< sp.stop]
 
+proc rowSliceBytes*(text: string; sp: LineSpan; caretAt: int;
+                    selA, selB: int; width: int): string =
+  ## The span's slice with BOTH the selection highlight and the drawn
+  ## caret applied. The caret is a single cell (its own palette fg plus
+  ## reverse); the selection is plain reverse. A caret inside a selection
+  ## still reads as the caret: its cell re-emits the caret style. This is
+  ## the one slice builder the renderers use, so the span model and the
+  ## full-repaint bytes can never disagree about either highlight.
+  if caretAt < 0:
+    if selA >= 0:
+      return selSliceBytes(text, sp, selA, selB)
+    return text[sp.start ..< sp.stop]
+  if selA < 0:
+    return caretSliceBytes(text, sp, caretAt, width)
+  # Both highlights land in this span. The caret cell keeps its own style;
+  # the selection reverses everything else in [selA, selB).
+  if caretAt >= sp.stop:
+    # Caret past the content: selection styles the slice, the caret
+    # cell (and any break spaces it steps over) follow.
+    result = selSliceBytes(text, sp, selA, selB)
+    if caretAt > sp.stop:
+      result.add text[sp.stop ..< caretAt]
+    result.add CaretCellOn & " " & CaretCellOff
+    return result
+  # Caret at or inside the span: find the caret cell's byte range.
+  var caretStart = caretAt
+  var caretStop = caretAt
+  if caretAt <= sp.start:
+    caretStart = sp.start
+    let rl = min(runeLenSafe(text, sp.start), sp.stop - sp.start)
+    caretStop = sp.start + max(1, rl)
+  else:
+    let rl = min(runeLenSafe(text, caretAt), sp.stop - caretAt)
+    caretStop = caretAt + max(1, rl)
+  result = ""
+  if caretStart > sp.start:
+    result.add selSliceBytes(text, (sp.start, caretStart), selA, selB)
+  result.add CaretCellOn
+  if caretStop > caretStart and caretStop <= min(sp.stop, text.len):
+    result.add text[caretStart ..< caretStop]
+  else:
+    result.add " "
+  result.add CaretCellOff
+  if sp.stop > caretStop:
+    result.add selSliceBytes(text, (caretStop, sp.stop), selA, selB)
+
 proc caretRowOf*(text: string; caretAt: int; promptW, contW,
                  width: int): int =
   ## The visual row the drawn caret belongs on, or -1 for none. ``caretAt``
@@ -694,6 +800,17 @@ proc caretByteOffset*(ed: LineEditor): int =
   let combined = ed.line.text & ed.renderSuffix
   if ed.renderSuffixCursor: combined.len
   else: min(max(ed.line.position, 0), ed.line.text.len)
+
+proc selRange*(ed: LineEditor): tuple[a, b: int] =
+  ## The selection's ordered byte range, or (-1, -1) when none. The
+  ## anchor is one end; the cursor (`line.position`) is the other.
+  if ed.selAnchor < 0: return (-1, -1)
+  let a = ed.selAnchor
+  let b = ed.line.position
+  (min(a, b), max(a, b))
+
+proc hasSelection*(ed: LineEditor): bool =
+  ed.selAnchor >= 0 and ed.selAnchor != ed.line.position
 
 proc renderRowSpans*(ed: var LineEditor): seq[string] =
   ## The editor's painted cell content per visual row, top-down (no cursor
@@ -718,6 +835,7 @@ proc renderRowSpans*(ed: var LineEditor): seq[string] =
   let caretRow = caretRowOf(
     if ed.renderSuffixCursor: combined else: ed.line.text,
     caretAt, pw, cw, width)
+  let (selA, selB) = ed.selRange()
   let head = promptWrap(pw, width).head
   for _ in 0 ..< head:
     result.add ""          # prompt fragment row: cells the terminal wrapped
@@ -725,10 +843,9 @@ proc renderRowSpans*(ed: var LineEditor): seq[string] =
     if li < head:
       continue             # fragment rows emitted above
     let prefix = if li == head: ed.prompt else: ed.contPrompt
-    if li == caretRow:
-      result.add prefix & caretSliceBytes(combined, sp, caretAt, width)
-    else:
-      result.add prefix & combined[sp.start ..< sp.stop]
+    let rowCaret = if li == caretRow: caretAt else: -1
+    result.add prefix & rowSliceBytes(combined, sp, rowCaret, selA, selB,
+      width)
   if caretRow == result.len and caretAt >= 0:
     # The caret sits at the right margin past every content row: it gets
     # a row of its own below the content (continuation prompt + caret
@@ -739,7 +856,7 @@ proc renderRowSpans*(ed: var LineEditor): seq[string] =
       (caretAt, caretAt), caretAt, width)
 
 proc renderBuffer*(text, prompt, cont: string, width: int,
-                    caretAt = -1): string =
+                    caretAt = -1, sel: tuple[a, b: int] = (-1, -1)): string =
   ## Bytes that paint the buffer. Visual rows are joined with ``"\r\n"``
   ## and no trailing newline is emitted. The prompt is written verbatim
   ## (so callers can include color escapes); its display width is taken
@@ -764,10 +881,8 @@ proc renderBuffer*(text, prompt, cont: string, width: int,
       # The wrapped prompt's last fragment shares a row with the first
       # content span; the terminal cursor is already at that column.
       discard
-    if li == caretRow:
-      result.add caretSliceBytes(text, sp, caretAt, width)
-    else:
-      result.add text[sp.start ..< sp.stop]
+    let rowCaret = if li == caretRow: caretAt else: -1
+    result.add rowSliceBytes(text, sp, rowCaret, sel.a, sel.b, width)
   if caretRow == rowCount and caretAt >= 0:
     # Margin caret past every content row: the caret-only row below the
     # content (see renderRowSpans).
@@ -947,7 +1062,7 @@ proc redrawBytes*(ed: var LineEditor; synchronized = true): string =
     buf.add "\x1b[" & $walkUp & "A"
   buf.add "\r\x1b[J"
   buf.add renderBuffer(renderedText, ed.prompt, ed.contPrompt, width,
-    caretAt)
+    caretAt, ed.selRange())
   if total - 1 > targetRow:
     buf.add "\x1b[" & $(total - 1 - targetRow) & "A"
   elif targetRow > total - 1:
@@ -1029,8 +1144,28 @@ proc parkAtEnd(ed: var LineEditor) =
 
 # ---------- Edit ops (multiline-aware) ----------
 
+proc clearSelection*(ed: var LineEditor) =
+  ed.selAnchor = -1
+
+proc selectionText*(ed: LineEditor): string =
+  ## The selected bytes, or "" when there is no selection.
+  if not ed.hasSelection(): return ""
+  let (a, b) = ed.selRange()
+  ed.line.text[a ..< b]
+
+proc deleteSelection*(ed: var LineEditor) =
+  ## Remove the selected range and park the cursor at its start. No-op
+  ## without a selection. Does not redraw: callers fold this into their
+  ## own mutation + repaint.
+  if not ed.hasSelection(): return
+  let (a, b) = ed.selRange()
+  ed.line.text = ed.line.text[0 ..< a] & ed.line.text[b .. ^1]
+  ed.line.position = a
+  ed.selAnchor = -1
+
 proc back*(ed: var LineEditor, n = 1) =
   ## Step the cursor left by ``n`` runes / newlines.
+  ed.clearSelection()
   for _ in 0 ..< n:
     if ed.line.position <= 0: break
     if ed.line.text[ed.line.position - 1] == '\n':
@@ -1040,6 +1175,7 @@ proc back*(ed: var LineEditor, n = 1) =
   fullRedraw(ed)
 
 proc forward*(ed: var LineEditor, n = 1) =
+  ed.clearSelection()
   for _ in 0 ..< n:
     if ed.line.position >= ed.line.text.len: break
     if ed.line.text[ed.line.position] == '\n':
@@ -1049,6 +1185,11 @@ proc forward*(ed: var LineEditor, n = 1) =
   fullRedraw(ed)
 
 proc deletePrevious*(ed: var LineEditor) =
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
   if ed.line.position <= 0: return
   let start =
     if ed.line.text[ed.line.position - 1] == '\n': ed.line.position - 1
@@ -1060,6 +1201,11 @@ proc deletePrevious*(ed: var LineEditor) =
   fullRedraw(ed)
 
 proc deleteNext*(ed: var LineEditor) =
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
   if ed.line.position >= ed.line.text.len: return
   let stop =
     if ed.line.text[ed.line.position] == '\n': ed.line.position + 1
@@ -1094,6 +1240,7 @@ proc insertText*(ed: var LineEditor, s: string) =
   if s.len > room:
     s.setLen runeBoundaryAtOrBefore(s, room)
     capNotice(ed)
+  if ed.hasSelection(): ed.deleteSelection()
   if ed.mode == mdInsert or s.contains('\n'):
     ed.line.text = ed.line.text[0 ..< ed.line.position] & s &
                    ed.line.text[ed.line.position .. ^1]
@@ -1129,6 +1276,7 @@ proc changeLine*(ed: var LineEditor, s: string) =
   ## Replace the entire buffer (history recall, prefill, external
   ## editor). Same hard cap as typing: oversized content is cut at a
   ## rune boundary and belled rather than loaded unchecked.
+  ed.selAnchor = -1
   var s = s
   if s.len > MaxBufferBytes:
     s.setLen runeBoundaryAtOrBefore(s, MaxBufferBytes)
@@ -1140,10 +1288,12 @@ proc changeLine*(ed: var LineEditor, s: string) =
 
 proc clearLine*(ed: var LineEditor) =
   ## Empty the buffer.
+  ed.selAnchor = -1
   ed.changeLine("")
 
 proc goToStart*(ed: var LineEditor) =
   ## Move to the start of the current logical line.
+  ed.clearSelection()
   var p = ed.line.position
   while p > 0 and ed.line.text[p - 1] != '\n':
     dec p
@@ -1152,6 +1302,7 @@ proc goToStart*(ed: var LineEditor) =
 
 proc goToEnd*(ed: var LineEditor) =
   ## Move to the end of the current logical line.
+  ed.clearSelection()
   var p = ed.line.position
   while p < ed.line.text.len and ed.line.text[p] != '\n':
     inc p
@@ -1159,10 +1310,12 @@ proc goToEnd*(ed: var LineEditor) =
   fullRedraw(ed)
 
 proc goToBufferStart*(ed: var LineEditor) =
+  ed.clearSelection()
   ed.line.position = 0
   fullRedraw(ed)
 
 proc goToBufferEnd*(ed: var LineEditor) =
+  ed.clearSelection()
   ed.line.position = ed.line.text.len
   fullRedraw(ed)
 
@@ -1170,6 +1323,7 @@ proc isWordChar(b: char): bool {.inline.} =
   b != ' ' and b != '\t' and b != '\n'
 
 proc wordLeft*(ed: var LineEditor) =
+  ed.clearSelection()
   var p = ed.line.position
   while p > 0 and not isWordChar(ed.line.text[p - 1]):
     dec p
@@ -1179,6 +1333,7 @@ proc wordLeft*(ed: var LineEditor) =
   fullRedraw(ed)
 
 proc wordRight*(ed: var LineEditor) =
+  ed.clearSelection()
   var p = ed.line.position
   let n = ed.line.text.len
   while p < n and isWordChar(ed.line.text[p]):
@@ -1189,6 +1344,11 @@ proc wordRight*(ed: var LineEditor) =
   fullRedraw(ed)
 
 proc deleteWordLeft*(ed: var LineEditor) =
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
   let stop = ed.line.position
   var p = ed.line.position
   while p > 0 and not isWordChar(ed.line.text[p - 1]):
@@ -1208,6 +1368,11 @@ proc deleteToBoundaryLeft*(ed: var LineEditor) =
   ## alphanumeric run. This peels one path segment per press
   ## (``/usr/local/bin`` -> ``/usr/local/`` -> ``/usr/``) instead of
   ## stalling when the cursor lands right after a delimiter.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
   var p = ed.line.position
   let stop = ed.line.position
   while p > 0:
@@ -1229,6 +1394,7 @@ proc visualUp*(ed: var LineEditor) =
   ## possible. If already on the top visual row of the buffer, fall back
   ## to ``historyPrevious`` (Emacs convention).
 
+  ed.clearSelection()
   let width = max(2, ed.width)
   let pw = ed.promptW
   let cw = ed.contPromptW
@@ -1256,6 +1422,7 @@ proc visualUp*(ed: var LineEditor) =
   fullRedraw(ed)
 
 proc visualDown*(ed: var LineEditor) =
+  ed.clearSelection()
   let width = max(2, ed.width)
   let pw = ed.promptW
   let cw = ed.contPromptW
@@ -1284,6 +1451,295 @@ proc visualDown*(ed: var LineEditor) =
   if seenTarget:
     ed.line.position = bestP
     fullRedraw(ed)
+
+# ---------- Selection ops ----------
+
+template selectMotion(ed: LineEditor, body: untyped): untyped =
+  ## Run a cursor motion as a selection extension: the first press
+  ## anchors at the current cursor, every motion then moves the cursor
+  ## and keeps the anchor put. A motion that lands back on the anchor
+  ## drops the selection (a zero-width selection is no selection).
+  if ed.selAnchor < 0: ed.selAnchor = ed.line.position
+  body
+  if ed.selAnchor == ed.line.position: ed.selAnchor = -1
+  fullRedraw(ed)
+
+proc selectLeft*(ed: var LineEditor) =
+  selectMotion(ed):
+    if ed.line.position > 0:
+      if ed.line.text[ed.line.position - 1] == '\n':
+        dec ed.line.position
+      else:
+        ed.line.position = runeStartBefore(ed.line.text, ed.line.position)
+
+proc selectRight*(ed: var LineEditor) =
+  selectMotion(ed):
+    if ed.line.position < ed.line.text.len:
+      if ed.line.text[ed.line.position] == '\n':
+        inc ed.line.position
+      else:
+        ed.line.position += runeLenSafe(ed.line.text, ed.line.position)
+
+proc selectWordLeft*(ed: var LineEditor) =
+  selectMotion(ed):
+    var p = ed.line.position
+    while p > 0 and not isWordChar(ed.line.text[p - 1]):
+      dec p
+    while p > 0 and isWordChar(ed.line.text[p - 1]):
+      dec p
+    ed.line.position = p
+
+proc selectWordRight*(ed: var LineEditor) =
+  selectMotion(ed):
+    var p = ed.line.position
+    let n = ed.line.text.len
+    while p < n and isWordChar(ed.line.text[p]):
+      inc p
+    while p < n and not isWordChar(ed.line.text[p]):
+      inc p
+    ed.line.position = p
+
+proc selectHome*(ed: var LineEditor) =
+  selectMotion(ed):
+    var p = ed.line.position
+    while p > 0 and ed.line.text[p - 1] != '\n':
+      dec p
+    ed.line.position = p
+
+proc selectEnd*(ed: var LineEditor) =
+  selectMotion(ed):
+    var p = ed.line.position
+    while p < ed.line.text.len and ed.line.text[p] != '\n':
+      inc p
+    ed.line.position = p
+
+proc selectUp*(ed: var LineEditor) =
+  ## Extend the selection one visual row up (no history fall-through:
+  ## a selection gesture never recalls history).
+  if ed.selAnchor < 0: ed.selAnchor = ed.line.position
+  let width = max(2, ed.width)
+  let pw = ed.promptW
+  let cw = ed.contPromptW
+  let (curR, curC) = cursorVisual(ed.line.text, ed.line.position, pw, cw, width)
+  if curR > promptWrap(pw, width).head:
+    var bestP = ed.line.position
+    var bestDiff = high(int)
+    var i = 0
+    while i <= ed.line.text.len:
+      let (r, c) = cursorVisual(ed.line.text, i, pw, cw, width)
+      if r == curR - 1:
+        let d = abs(c - curC)
+        if d < bestDiff:
+          bestDiff = d
+          bestP = i
+      elif r >= curR:
+        break
+      if i < ed.line.text.len:
+        if ed.line.text[i] == '\n': inc i
+        else: i += runeLenSafe(ed.line.text, i)
+      else:
+        inc i
+    ed.line.position = bestP
+  if ed.selAnchor == ed.line.position: ed.selAnchor = -1
+  fullRedraw(ed)
+
+proc selectDown*(ed: var LineEditor) =
+  if ed.selAnchor < 0: ed.selAnchor = ed.line.position
+  let width = max(2, ed.width)
+  let pw = ed.promptW
+  let cw = ed.contPromptW
+  let (curR, curC) = cursorVisual(ed.line.text, ed.line.position, pw, cw, width)
+  let total = totalRows(ed.line.text, pw, cw, width)
+  if curR < total - 1:
+    var bestP = ed.line.position
+    var bestDiff = high(int)
+    var seenTarget = false
+    var i = 0
+    while i <= ed.line.text.len:
+      let (r, c) = cursorVisual(ed.line.text, i, pw, cw, width)
+      if r == curR + 1:
+        seenTarget = true
+        let d = abs(c - curC)
+        if d < bestDiff:
+          bestDiff = d
+          bestP = i
+      elif r > curR + 1:
+        break
+      if i < ed.line.text.len:
+        if ed.line.text[i] == '\n': inc i
+        else: i += runeLenSafe(ed.line.text, i)
+      else:
+        inc i
+    if seenTarget:
+      ed.line.position = bestP
+  if ed.selAnchor == ed.line.position: ed.selAnchor = -1
+  fullRedraw(ed)
+
+proc selectAll*(ed: var LineEditor) =
+  if ed.line.text.len == 0: return
+  ed.selAnchor = 0
+  ed.line.position = ed.line.text.len
+  fullRedraw(ed)
+
+proc selectBufferStart*(ed: var LineEditor) =
+  if ed.selAnchor < 0: ed.selAnchor = ed.line.position
+  ed.line.position = 0
+  if ed.selAnchor == ed.line.position: ed.selAnchor = -1
+  fullRedraw(ed)
+
+proc selectBufferEnd*(ed: var LineEditor) =
+  if ed.selAnchor < 0: ed.selAnchor = ed.line.position
+  ed.line.position = ed.line.text.len
+  if ed.selAnchor == ed.line.position: ed.selAnchor = -1
+  fullRedraw(ed)
+
+proc copySelection*(ed: var LineEditor) =
+  ## Copy the selection to the kill ring and the system clipboard.
+  ## Keeps the selection and the cursor: copy is non-destructive.
+  if not ed.hasSelection(): return
+  ed.lastKill = ed.selectionText()
+  if ed.clipboardWrite != nil:
+    ed.clipboardWrite(ed.lastKill)
+  else:
+    ed.write clipboard.clipboardWriteOsc52(ed.lastKill)
+
+proc cutSelection*(ed: var LineEditor) =
+  if not ed.hasSelection(): return
+  ed.lastKill = ed.selectionText()
+  if ed.clipboardWrite != nil:
+    ed.clipboardWrite(ed.lastKill)
+  else:
+    ed.write clipboard.clipboardWriteOsc52(ed.lastKill)
+  ed.deleteSelection()
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
+
+proc pasteClipboard*(ed: var LineEditor) =
+  ## Insert the system clipboard at the cursor, replacing any
+  ## selection. Falls back to the kill ring when the platform has no
+  ## clipboard reader (the common case on bare X11 without xclip).
+  var s = clipboard.clipboardRead()
+  if s.len == 0 and ed.lastKill.len > 0:
+    s = ed.lastKill
+  if s.len == 0: return
+  ed.insertText(s)
+
+proc pasteText*(ed: var LineEditor, s: string) =
+  ## Insert `s` at the cursor, replacing any selection (the clipboard
+  ## path; `yank` routes through here too).
+  if s.len == 0: return
+  ed.insertText(s)
+
+proc yank*(ed: var LineEditor) =
+  ## Insert the last cut/copied text (Emacs C-y).
+  if ed.lastKill.len == 0: return
+  ed.insertText(ed.lastKill)
+
+proc deleteWordRight*(ed: var LineEditor) =
+  ## Delete the word (and trailing spaces) right of the cursor.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
+  let start = ed.line.position
+  var p = ed.line.position
+  let n = ed.line.text.len
+  while p < n and not isWordChar(ed.line.text[p]):
+    inc p
+  while p < n and isWordChar(ed.line.text[p]):
+    inc p
+  if p == start: return
+  ed.line.text = ed.line.text[0 ..< start] & ed.line.text[p .. ^1]
+  ed.line.position = start
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
+
+proc deleteToBoundaryRight*(ed: var LineEditor) =
+  ## Delete forward to the next non-alphanumeric boundary: the forward
+  ## twin of `deleteToBoundaryLeft`, peeling one path segment per press.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
+  let start = ed.line.position
+  var p = ed.line.position
+  let n = ed.line.text.len
+  while p < n:
+    let c = ed.line.text[p]
+    if c.isAlphanumeric or c == '_': break
+    inc p
+  while p < n:
+    let c = ed.line.text[p]
+    if not (c.isAlphanumeric or c == '_'): break
+    inc p
+  if p == start: return
+  ed.line.text = ed.line.text[0 ..< start] & ed.line.text[p .. ^1]
+  ed.line.position = start
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
+
+proc deleteToEol*(ed: var LineEditor) =
+  ## Delete from the cursor to the end of the current logical line.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
+  var p = ed.line.position
+  while p < ed.line.text.len and ed.line.text[p] != '\n':
+    inc p
+  if p == ed.line.position: return
+  ed.line.text = ed.line.text[0 ..< ed.line.position] &
+                 ed.line.text[p .. ^1]
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
+
+proc deleteToBol*(ed: var LineEditor) =
+  ## Delete from the start of the current logical line to the cursor.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
+  var p = ed.line.position
+  while p > 0 and ed.line.text[p - 1] != '\n':
+    dec p
+  if p == ed.line.position: return
+  ed.line.text = ed.line.text[0 ..< p] & ed.line.text[ed.line.position .. ^1]
+  ed.line.position = p
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
+
+proc transposeChars*(ed: var LineEditor) =
+  ## Swap the rune before the cursor with the one under it (Emacs C-t).
+  ## At end of line swaps the last two runes before the cursor.
+  if ed.hasSelection():
+    ed.deleteSelection()
+    callHook(ed.onMutate, ed)
+    fullRedraw(ed)
+    return
+  let n = ed.line.text.len
+  if ed.line.position == 0: return
+  # Rune boundaries around the cursor: `left` is the rune before it,
+  # `right` the rune at it. At end of buffer the swap is the last two
+  # runes before the cursor (Emacs behavior).
+  var rightStart = ed.line.position
+  if rightStart >= n:
+    rightStart = runeStartBefore(ed.line.text, rightStart)
+    if rightStart <= 0: return
+  var leftStart = runeStartBefore(ed.line.text, rightStart)
+  if leftStart == rightStart: return
+  let leftLen = rightStart - leftStart
+  let rightLen = min(runeLenSafe(ed.line.text, rightStart), n - rightStart)
+  ed.line.text = ed.line.text[0 ..< leftStart] &
+    ed.line.text[rightStart ..< rightStart + rightLen] &
+    ed.line.text[leftStart ..< leftStart + leftLen] &
+    ed.line.text[rightStart + rightLen .. ^1]
+  ed.line.position = rightStart + rightLen
+  callHook(ed.onMutate, ed)
+  fullRedraw(ed)
 
 proc loadView(ed: var LineEditor, idx: int) =
   ## Pull the buffer + cursor for view ``idx`` into the editor.
@@ -1370,24 +1826,38 @@ KEYNAMES[26]   = "ctrl+z"
 
 var KEYSEQS* {.threadvar.}: CritBitTree[KeySeq]
 
-when defined(windows):
-  KEYSEQS["up"]         = @[224, 72]
-  KEYSEQS["down"]       = @[224, 80]
-  KEYSEQS["right"]      = @[224, 77]
-  KEYSEQS["left"]       = @[224, 75]
-  KEYSEQS["home"]       = @[224, 71]
-  KEYSEQS["end"]        = @[224, 79]
-  KEYSEQS["insert"]     = @[224, 82]
-  KEYSEQS["delete"]     = @[224, 83]
-else:
-  KEYSEQS["up"]         = @[27, 91, 65]
-  KEYSEQS["down"]       = @[27, 91, 66]
-  KEYSEQS["right"]      = @[27, 91, 67]
-  KEYSEQS["left"]       = @[27, 91, 68]
-  KEYSEQS["home"]       = @[27, 91, 72]
-  KEYSEQS["end"]        = @[27, 91, 70]
-  KEYSEQS["insert"]     = @[27, 91, 50, 126]
-  KEYSEQS["delete"]     = @[27, 91, 51, 126]
+# Navigation keys, VT encoding (CSI 1;<mod> <dir> for arrows/home/end,
+# CSI 2/3;<mod> ~ for insert/delete). The modifier number is
+# 1 + (shift 1 | alt 2 | ctrl 4). Every platform decodes this one
+# grammar: POSIX terminals send it natively, and the Windows input
+# thread enables ENABLE_VIRTUAL_TERMINAL_INPUT so the console does too.
+# Legacy conhost (no VT input) delivers `_getch` 0/224-prefixed pairs
+# instead; `handleEscape` maps those pair codes onto the same command
+# names, so both console modes dispatch identically.
+KEYSEQS["up"]         = @[27, 91, 65]
+KEYSEQS["down"]       = @[27, 91, 66]
+KEYSEQS["right"]      = @[27, 91, 67]
+KEYSEQS["left"]       = @[27, 91, 68]
+KEYSEQS["home"]       = @[27, 91, 72]
+KEYSEQS["end"]        = @[27, 91, 70]
+KEYSEQS["insert"]     = @[27, 91, 50, 126]
+KEYSEQS["delete"]     = @[27, 91, 51, 126]
+KEYSEQS["shift+left"]  = @[27, 91, 49, 59, 50, 68]
+KEYSEQS["shift+right"] = @[27, 91, 49, 59, 50, 67]
+KEYSEQS["shift+up"]    = @[27, 91, 49, 59, 50, 65]
+KEYSEQS["shift+down"]  = @[27, 91, 49, 59, 50, 66]
+KEYSEQS["shift+home"]  = @[27, 91, 49, 59, 50, 72]
+KEYSEQS["shift+end"]   = @[27, 91, 49, 59, 50, 70]
+KEYSEQS["ctrl+shift+left"]  = @[27, 91, 49, 59, 54, 68]
+KEYSEQS["ctrl+shift+right"] = @[27, 91, 49, 59, 54, 67]
+KEYSEQS["ctrl+shift+home"]  = @[27, 91, 49, 59, 54, 72]
+KEYSEQS["ctrl+shift+end"]   = @[27, 91, 49, 59, 54, 70]
+KEYSEQS["ctrl+left"]   = @[27, 91, 49, 59, 53, 68]
+KEYSEQS["ctrl+right"]  = @[27, 91, 49, 59, 53, 67]
+KEYSEQS["ctrl+home"]   = @[27, 91, 49, 59, 53, 72]
+KEYSEQS["ctrl+end"]    = @[27, 91, 49, 59, 53, 70]
+KEYSEQS["ctrl+delete"]  = @[27, 91, 51, 59, 53, 126]
+KEYSEQS["shift+delete"]  = @[27, 91, 51, 59, 50, 126]
 
 var KEYMAP* {.threadvar.}: CritBitTree[KeyCallback]
 
@@ -1534,6 +2004,28 @@ proc cmdComplete(ed: var LineEditor) =
 proc cmdReverseComplete(ed: var LineEditor) = ed.reverseCompleteLine()
 proc cmdEditInEditor(ed: var LineEditor) =
   if ed.editInEditor != nil: ed.editInEditor(ed)
+proc cmdSelectLeft(ed: var LineEditor) = ed.selectLeft()
+proc cmdSelectRight(ed: var LineEditor) = ed.selectRight()
+proc cmdSelectUp(ed: var LineEditor) = ed.selectUp()
+proc cmdSelectDown(ed: var LineEditor) = ed.selectDown()
+proc cmdSelectHome(ed: var LineEditor) = ed.selectHome()
+proc cmdSelectEnd(ed: var LineEditor) = ed.selectEnd()
+proc cmdSelectWordLeft(ed: var LineEditor) = ed.selectWordLeft()
+proc cmdSelectWordRight(ed: var LineEditor) = ed.selectWordRight()
+proc cmdSelectAll(ed: var LineEditor) = ed.selectAll()
+proc cmdSelectBufferStart(ed: var LineEditor) = ed.selectBufferStart()
+proc cmdSelectBufferEnd(ed: var LineEditor) = ed.selectBufferEnd()
+proc cmdBufferStart(ed: var LineEditor) = ed.goToBufferStart()
+proc cmdBufferEnd(ed: var LineEditor) = ed.goToBufferEnd()
+proc cmdCut(ed: var LineEditor) = ed.cutSelection()
+proc cmdCopy(ed: var LineEditor) = ed.copySelection()
+proc cmdPaste(ed: var LineEditor) = ed.pasteClipboard()
+proc cmdYank(ed: var LineEditor) = ed.yank()
+proc cmdDeleteWordRight(ed: var LineEditor) = ed.deleteWordRight()
+proc cmdDeleteToBoundaryRight(ed: var LineEditor) = ed.deleteToBoundaryRight()
+proc cmdDeleteToEol(ed: var LineEditor) = ed.deleteToEol()
+proc cmdDeleteToBol(ed: var LineEditor) = ed.deleteToBol()
+proc cmdTransposeChars(ed: var LineEditor) = ed.transposeChars()
 when defined(posix):
   proc cmdSuspend(ed: var LineEditor) =
     ed.write "\n\e[?2004l"
@@ -1562,8 +2054,8 @@ var
     "end": "End CtrlE",
     "left": "Left CtrlB",
     "right": "Right CtrlF",
-    "word-left": "AltB",
-    "word-right": "AltF",
+    "word-left": "AltB CtrlLeft",
+    "word-right": "AltF CtrlRight",
     "up": "Up",
     "down": "Down",
     "history-previous": "CtrlP",
@@ -1577,7 +2069,30 @@ var
     "suspend": "CtrlZ",
     "complete": "Tab",
     "reverse-complete": "ShiftTab",
-    "edit-in-editor": "AltE CtrlX CtrlE"
+    "edit-in-editor": "AltE CtrlX CtrlE",
+    "insert-newline": "",
+    "select-left": "ShiftLeft",
+    "select-right": "ShiftRight",
+    "select-up": "ShiftUp",
+    "select-down": "ShiftDown",
+    "select-home": "ShiftHome",
+    "select-end": "ShiftEnd",
+    "select-word-left": "CtrlShiftLeft",
+    "select-word-right": "CtrlShiftRight",
+    "select-all": "",
+    "select-buffer-start": "CtrlShiftHome",
+    "select-buffer-end": "CtrlShiftEnd",
+    "buffer-start": "",
+    "buffer-end": "",
+    "cut": "CtrlX",
+    "copy": "AltW",
+    "paste": "CtrlV",
+    "yank": "CtrlY",
+    "delete-word-right": "AltD CtrlDelete",
+    "delete-to-boundary-right": "",
+    "delete-to-eol": "CtrlK",
+    "delete-to-bol": "",
+    "transpose-chars": "CtrlT"
   }.toTable
 
 var CommandProcs*: Table[string, KeyCallback]
@@ -1608,6 +2123,7 @@ proc normalizeKeyToken(token: string): string =
   if t == "ctrlu": return "ctrl+u"
   if t == "ctrlv": return "ctrl+v"
   if t == "ctrlw": return "ctrl+w"
+  if t == "ctrlt": return "ctrl+t"
   if t == "ctrlx": return "ctrl+x"
   if t == "ctrly": return "ctrl+y"
   if t == "ctrlz": return "ctrl+z"
@@ -1615,7 +2131,29 @@ proc normalizeKeyToken(token: string): string =
   if t == "alte": return "alt+e"
   if t == "altf": return "alt+f"
   if t == "alth": return "alt+h"
+  if t == "altd": return "alt+d"
+  if t == "altw": return "alt+w"
   if t == "shift-tab" or t == "shifttab": return "shift-tab"
+  if t == "shiftleft": return "shift+left"
+  if t == "shiftright": return "shift+right"
+  if t == "shiftup": return "shift+up"
+  if t == "shiftdown": return "shift+down"
+  if t == "shifthome": return "shift+home"
+  if t == "shiftend": return "shift+end"
+  if t == "shiftdelete": return "shift+delete"
+  if t == "ctrlleft": return "ctrl+left"
+  if t == "ctrlright": return "ctrl+right"
+  if t == "ctrlup": return "ctrl+up"
+  if t == "ctrldown": return "ctrl+down"
+  if t == "ctrlhome": return "ctrl+home"
+  if t == "ctrlend": return "ctrl+end"
+  if t == "ctrldelete": return "ctrl+delete"
+  if t == "ctrlshiftleft": return "ctrl+shift+left"
+  if t == "ctrlshiftright": return "ctrl+shift+right"
+  if t == "ctrlshiftup": return "ctrl+shift+up"
+  if t == "ctrlshiftdown": return "ctrl+shift+down"
+  if t == "ctrlshifthome": return "ctrl+shift+home"
+  if t == "ctrlshiftend": return "ctrl+shift+end"
   if t == "backspace": return "backspace"
   if t == "tab": return "tab"
   if t == "insert": return "insert"
@@ -1708,6 +2246,30 @@ proc applyShortcuts*(shortcuts: Table[string, string]) =
     CommandProcs["complete"] = cmdComplete
     CommandProcs["reverse-complete"] = cmdReverseComplete
     CommandProcs["edit-in-editor"] = cmdEditInEditor
+    CommandProcs["insert-newline"] = proc(ed: var LineEditor) =
+      ed.insertNewline()
+    CommandProcs["select-left"] = cmdSelectLeft
+    CommandProcs["select-right"] = cmdSelectRight
+    CommandProcs["select-up"] = cmdSelectUp
+    CommandProcs["select-down"] = cmdSelectDown
+    CommandProcs["select-home"] = cmdSelectHome
+    CommandProcs["select-end"] = cmdSelectEnd
+    CommandProcs["select-word-left"] = cmdSelectWordLeft
+    CommandProcs["select-word-right"] = cmdSelectWordRight
+    CommandProcs["select-all"] = cmdSelectAll
+    CommandProcs["select-buffer-start"] = cmdSelectBufferStart
+    CommandProcs["select-buffer-end"] = cmdSelectBufferEnd
+    CommandProcs["buffer-start"] = cmdBufferStart
+    CommandProcs["buffer-end"] = cmdBufferEnd
+    CommandProcs["cut"] = cmdCut
+    CommandProcs["copy"] = cmdCopy
+    CommandProcs["paste"] = cmdPaste
+    CommandProcs["yank"] = cmdYank
+    CommandProcs["delete-word-right"] = cmdDeleteWordRight
+    CommandProcs["delete-to-boundary-right"] = cmdDeleteToBoundaryRight
+    CommandProcs["delete-to-eol"] = cmdDeleteToEol
+    CommandProcs["delete-to-bol"] = cmdDeleteToBol
+    CommandProcs["transpose-chars"] = cmdTransposeChars
   CommandProcsAll = CommandProcs
   when not defined(posix):
     CommandProcsAll["suspend"] = proc(ed: var LineEditor) = discard
@@ -1824,24 +2386,30 @@ proc initKeyTables*() =
   KEYNAMES[25]   = "ctrl+y"
   KEYNAMES[26]   = "ctrl+z"
 
-  when defined(windows):
-    KEYSEQS["up"]         = @[224, 72]
-    KEYSEQS["down"]       = @[224, 80]
-    KEYSEQS["right"]      = @[224, 77]
-    KEYSEQS["left"]       = @[224, 75]
-    KEYSEQS["home"]       = @[224, 71]
-    KEYSEQS["end"]        = @[224, 79]
-    KEYSEQS["insert"]     = @[224, 82]
-    KEYSEQS["delete"]     = @[224, 83]
-  else:
-    KEYSEQS["up"]         = @[27, 91, 65]
-    KEYSEQS["down"]       = @[27, 91, 66]
-    KEYSEQS["right"]      = @[27, 91, 67]
-    KEYSEQS["left"]       = @[27, 91, 68]
-    KEYSEQS["home"]       = @[27, 91, 72]
-    KEYSEQS["end"]        = @[27, 91, 70]
-    KEYSEQS["insert"]     = @[27, 91, 50, 126]
-    KEYSEQS["delete"]     = @[27, 91, 51, 126]
+  KEYSEQS["up"]         = @[27, 91, 65]
+  KEYSEQS["down"]       = @[27, 91, 66]
+  KEYSEQS["right"]      = @[27, 91, 67]
+  KEYSEQS["left"]       = @[27, 91, 68]
+  KEYSEQS["home"]       = @[27, 91, 72]
+  KEYSEQS["end"]        = @[27, 91, 70]
+  KEYSEQS["insert"]     = @[27, 91, 50, 126]
+  KEYSEQS["delete"]     = @[27, 91, 51, 126]
+  KEYSEQS["shift+left"]  = @[27, 91, 49, 59, 50, 68]
+  KEYSEQS["shift+right"] = @[27, 91, 49, 59, 50, 67]
+  KEYSEQS["shift+up"]    = @[27, 91, 49, 59, 50, 65]
+  KEYSEQS["shift+down"]  = @[27, 91, 49, 59, 50, 66]
+  KEYSEQS["shift+home"]  = @[27, 91, 49, 59, 50, 72]
+  KEYSEQS["shift+end"]   = @[27, 91, 49, 59, 50, 70]
+  KEYSEQS["ctrl+shift+left"]  = @[27, 91, 49, 59, 54, 68]
+  KEYSEQS["ctrl+shift+right"] = @[27, 91, 49, 59, 54, 67]
+  KEYSEQS["ctrl+shift+home"]  = @[27, 91, 49, 59, 54, 72]
+  KEYSEQS["ctrl+shift+end"]   = @[27, 91, 49, 59, 54, 70]
+  KEYSEQS["ctrl+left"]   = @[27, 91, 49, 59, 53, 68]
+  KEYSEQS["ctrl+right"]  = @[27, 91, 49, 59, 53, 67]
+  KEYSEQS["ctrl+home"]   = @[27, 91, 49, 59, 53, 72]
+  KEYSEQS["ctrl+end"]    = @[27, 91, 49, 59, 53, 70]
+  KEYSEQS["ctrl+delete"]  = @[27, 91, 51, 59, 53, 126]
+  KEYSEQS["shift+delete"]  = @[27, 91, 51, 59, 50, 126]
 
   KEYMAP["backspace"] = proc(ed: var LineEditor) = ed.deletePrevious()
   KEYMAP["delete"]    = proc(ed: var LineEditor) = ed.deleteNext()
@@ -2169,6 +2737,7 @@ proc initEditor*(mode = mdInsert, historySize = 256, historyFile: string = ""): 
   result.width = 80
   result.contPrompt = "  "
   result.escPutback = -1
+  result.selAnchor = -1
 
 proc resetForRead(ed: var LineEditor, prompt: string, hidechars: bool) =
   if ed.prefillText.len > 0:
@@ -2194,6 +2763,7 @@ proc resetForRead(ed: var LineEditor, prompt: string, hidechars: bool) =
   ed.complIndex = -1
   ed.complMatches = @[]
   ed.complPrefix = ""
+  ed.selAnchor = -1
   if ed.getWidth != nil:
     let w = ed.getWidth()
     if w > 0: ed.width = w
@@ -2224,14 +2794,32 @@ proc handleEscape*(ed: var LineEditor, c1: int): bool =
   if c2 < 0:
     ed.canceled = true
     raise newException(InputCancelled, "")
-  # Two-byte sequences. On Windows arrows / nav keys arrive as ``[224, X]``
-  # and KEYSEQS holds the same shape; on POSIX KEYSEQS values are 3+ bytes
-  # so this two-byte check is always a no-op there.
+  # Two-byte sequences. On Windows legacy consoles arrows / nav keys
+  # arrive as ``[224, X]`` (``[0, X]`` for a few function keys); the
+  # pair codes map straight onto the same command names the VT grammar
+  # uses, so both console modes dispatch identically. On POSIX KEYSEQS
+  # values are 3+ bytes so the SEQCMDS match below is a no-op there.
   var s = @[c1.Key, c2.Key]
   for (seq, keyName) in SEQCMDS:
     if s == seq:
       discard runCommandsForKey(ed, keyName)
       return false
+  when defined(windows):
+    if c1 == 224 or c1 == 0:
+      let pairName =
+        case c2
+        of 72: "up"
+        of 80: "down"
+        of 77: "right"
+        of 75: "left"
+        of 71: "home"
+        of 79: "end"
+        of 82: "insert"
+        of 83: "delete"
+        else: ""
+      if pairName.len > 0:
+        discard runCommandsForKey(ed, pairName)
+        return false
   if s == KEYSEQS["left"]:   ed.back();             return false
   if s == KEYSEQS["right"]:  ed.forward();          return false
   if s == KEYSEQS["up"]:     KEYMAP["up"](ed);      return false
@@ -2262,6 +2850,9 @@ proc handleEscape*(ed: var LineEditor, c1: int): bool =
     altName = "alt+" & c2.char.toLowerAscii
   if altName == "alt+e" and ed.editInEditor != nil:
     ed.editInEditor(ed)
+    return false
+  if altName.len > 0 and DISPATCH.hasKey(altName):
+    discard runCommandsForKey(ed, altName)
     return false
   if altName.len > 0 and KEYMAP.hasKey(altName):
     KEYMAP[altName](ed)
@@ -2372,25 +2963,46 @@ proc handleEscape*(ed: var LineEditor, c1: int): bool =
               ed.insertText(clean)
         return false
       if c3 == 51 and c4 == 59:
-        # ESC [ 3 ; <mod> ~  (e.g. shift+delete)
+        # ESC [ 3 ; <mod> ~  (modified delete)
         let modCh = escCh()
         let final = escCh()
-        if final == 126 and modCh == 53:  # ctrl+delete
-          ed.deleteWordLeft()
+        if final == 126:
+          let keyName =
+            if modCh == 53: "ctrl+delete"
+            elif modCh == 50: "shift+delete"
+            else: ""
+          if keyName.len > 0:
+            discard runCommandsForKey(ed, keyName)
         return false
     elif c3 == 49:
-      # ESC [ 1 ; <mod> <dir>
+      # ESC [ 1 ; <mod> <dir>  (modified arrows / home / end)
       let c4 = escCh()
       if c4 == 59:
         let modifier = escCh()
         let direction = escCh()
-        if modifier == 53:  # ctrl
-          case direction
-          of 68: wordLeft(ed)
-          of 67: wordRight(ed)
-          of 65: KEYMAP["up"](ed)
-          of 66: KEYMAP["down"](ed)
-          else: discard
+        if direction in {65, 66, 67, 68, 72, 70}:
+          let dirName =
+            case direction
+            of 65: "up"
+            of 66: "down"
+            of 67: "right"
+            of 68: "left"
+            of 72: "home"
+            else: "end"
+          let keyName =
+            case modifier
+            of 50: "shift+" & dirName
+            of 53: "ctrl+" & dirName
+            of 54: "ctrl+shift+" & dirName
+            of 51: "alt+" & dirName
+            else: ""
+          if keyName.len > 0:
+            discard runCommandsForKey(ed, keyName)
+            return false
+          # Unbound modified key: fall back to the plain key's binding
+          # (a terminal that reports a modifier the user never asked for
+          # should not strand the arrow).
+          discard runCommandsForKey(ed, dirName)
       elif c4 == 51:
         # Kitty Shift+Enter: ESC [ 1 3 ; 2 u
         let c5 = escCh()
@@ -2503,6 +3115,7 @@ proc readLineWith*(ed: var LineEditor, prompt: string,
           ed.historyFlush()
           continue
         parkAtEnd(ed)
+        ed.selAnchor = -1
         if not noHistory and not hidechars:
           ed.historyAdd()
         ed.historyFlush()
@@ -2560,6 +3173,18 @@ proc readLineWith*(ed: var LineEditor, prompt: string,
         continue
       if c1 in ESCAPES:
         discard handleEscape(ed, c1)
+        paintIfCleared(ed, suffixJustCleared)
+        continue
+      if c1 == 24 and ed.hasSelection() and DISPATCH.hasKey("ctrl+x") and
+          "cut" in DISPATCH["ctrl+x"]:
+        # Ctrl+X with an active selection cuts it (the standard text
+        # widget contract). Without a selection Ctrl+X stays the emacs
+        # prefix below, so Ctrl+X Ctrl+E keeps working. Only the cut
+        # command runs: the key may also carry edit-in-editor's Ctrl+X
+        # prefix binding, and running that here would hand the buffer
+        # to $VISUAL on every cut.
+        if CommandProcsAll.hasKey("cut"):
+          CommandProcsAll["cut"](ed)
         paintIfCleared(ed, suffixJustCleared)
         continue
       if c1 == 24 and ed.editInEditor != nil:

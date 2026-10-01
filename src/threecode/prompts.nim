@@ -3421,11 +3421,20 @@ input:
   home / end    jump to start / end of the current logical line
   ctrl+u        clear the buffer
   ctrl+w        delete the word before the cursor
+  ctrl+k        delete to end of line
+  alt+d         delete the word after the cursor (also ctrl+delete)
+  ctrl+t        transpose characters around the cursor
   up / down     visual-row up/down inside the buffer; on the top/bottom row recalls history
   tab           complete :commands, provider names, model names
   ctrl+l        clear the screen
   alt+e         edit the prompt buffer in $VISUAL/$EDITOR
   ctrl+x ctrl+e same (emacs edit-and-execute-command)
+  shift+arrows  select text (also shift+home/end, ctrl+shift+arrows,
+                ctrl+shift+home/end for the whole buffer)
+  ctrl+x        cut the selection (without one: the emacs prefix above)
+  alt+w         copy the selection
+  ctrl+v        paste from the system clipboard
+  ctrl+y        paste the last cut/copied text
   @path         inline file contents (e.g. @src/foo.nim)
 """
 

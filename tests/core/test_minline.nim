@@ -1456,3 +1456,213 @@ suite "minline editor: shortcuts":
     expect InputCancelled:
       discard d.run(ed, prompt = "> ")
     check rowText(d.grid, 0) == "> hello"
+
+# ---------------- Driver: selection ----------------
+
+const
+  ShiftLeft* = @[27, 91, 49, 59, 50, 68]
+  ShiftRight* = @[27, 91, 49, 59, 50, 67]
+  ShiftHome* = @[27, 91, 49, 59, 50, 72]
+  ShiftEnd* = @[27, 91, 49, 59, 50, 70]
+  CtrlShiftLeft* = @[27, 91, 49, 59, 54, 68]
+  CtrlShiftRight* = @[27, 91, 49, 59, 54, 67]
+  CtrlK* = @[11]
+  CtrlT* = @[20]
+  CtrlY* = @[25]
+  AltD* = @[27, 100]
+  AltW* = @[27, 119]
+
+proc selCells*(g: Grid, r: int): int =
+  ## Count reverse-video cells on row `r` (the selection highlight).
+  var c = 0
+  while c < g.width:
+    if g.cellAttr(r, c).hasAttr(saReverse): inc result
+    inc c
+
+suite "minline editor: selection":
+  test "shift+left selects the previous char":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push ShiftLeft
+    d.push ShiftLeft
+    d.push Enter
+    discard d.run(ed, prompt = "> ")
+    check ed.selAnchor == -1  # submit clears the view state
+    # Re-run without submit to inspect the live selection.
+    var ed2 = initEditor()
+    let d2 = newDriver()
+    d2.pushString "hello"
+    d2.push ShiftLeft
+    d2.push ShiftLeft
+    d2.pushString ""  # no-op
+    expect EOFError:
+      discard d2.run(ed2, prompt = "> ")
+    check ed2.selAnchor == 5
+    check ed2.line.position == 3
+    check selCells(d2.grid, 0) == 2
+
+  test "typing replaces the selection":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push ShiftHome
+    d.pushString "H"
+    d.push Enter
+    check d.run(ed, prompt = "> ") == "H"
+
+  test "backspace deletes the selection":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push ShiftHome
+    d.push Backspace
+    d.push Enter
+    check d.run(ed, prompt = "> ") == ""
+
+  test "plain motion drops the selection":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push ShiftLeft
+    d.push ShiftLeft
+    d.push Left
+    expect EOFError:
+      discard d.run(ed, prompt = "> ")
+    # Left cleared the anchor; the text is intact.
+    check ed.selAnchor == -1
+    check ed.line.text == "hello"
+
+  test "ctrl+x cuts the selection":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello world"
+    d.push CtrlA
+    d.push ShiftRight
+    d.push ShiftRight
+    d.push ShiftRight
+    d.push ShiftRight
+    d.push ShiftRight
+    d.push @[24]
+    d.push Enter
+    check d.run(ed, prompt = "> ") == " world"
+    check ed.lastKill == "hello"
+
+  test "alt+w copies without deleting":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push ShiftHome
+    d.push AltW
+    d.push Enter
+    check d.run(ed, prompt = "> ") == "hello"
+    check ed.lastKill == "hello"
+
+  test "ctrl+y yanks the kill ring":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "ab"
+    d.push ShiftHome
+    d.push @[24]   # cut "ab"
+    d.push CtrlY
+    d.push Enter
+    check d.run(ed, prompt = "> ") == "ab"
+
+  test "shift+home/end select within the logical line":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "ab"
+    d.push AltEnter
+    d.pushString "cdef"
+    d.push ShiftHome
+    expect EOFError:
+      discard d.run(ed, prompt = "> ")
+    check ed.selAnchor == 7
+    check ed.line.position == 3
+
+  test "ctrl+shift+left/right select by word":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "one two"
+    d.push CtrlShiftLeft
+    expect EOFError:
+      discard d.run(ed, prompt = "> ")
+    check ed.selAnchor == 7
+    check ed.line.position == 4
+
+  test "selection renders across a wrap":
+    var ed = initEditor()
+    let d = newDriver(width = 10)
+    d.pushString "abcdefghij"
+    d.push ShiftHome
+    expect EOFError:
+      discard d.run(ed, prompt = "> ")
+    check selCells(d.grid, 0) > 0
+    check selCells(d.grid, 1) > 0
+
+  test "selection survives rebind of select-left":
+    var ed = initEditor()
+    let d = newDriver()
+    minline.configuredShortcuts = {"select-left": "CtrlG"}.toTable
+    d.pushString "xy"
+    d.push @[7]
+    expect EOFError:
+      discard d.run(ed, prompt = "> ")
+    check ed.selAnchor == 2
+    check ed.line.position == 1
+    minline.configuredShortcuts = initTable[string, string]()
+
+suite "minline editor: new edit ops":
+  test "ctrl+k deletes to end of line":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "hello"
+    d.push CtrlA
+    d.push @[1]  # already at start; move right twice
+    d.push Right
+    d.push Right
+    d.push CtrlK
+    d.push Enter
+    check d.run(ed, prompt = "> ") == "he"
+
+  test "alt+d deletes the word after the cursor":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "one two three"
+    d.push CtrlA
+    d.push AltD
+    d.push Enter
+    check d.run(ed, prompt = "> ") == " two three"
+
+  test "ctrl+t transposes chars":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "ab"
+    d.push CtrlT
+    d.push Enter
+    check d.run(ed, prompt = "> ") == "ba"
+
+  test "ctrl+delete deletes the word after the cursor":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "one two"
+    d.push CtrlA
+    d.push @[27, 91, 51, 59, 53, 126]
+    d.push Enter
+    check d.run(ed, prompt = "> ") == " two"
+
+  test "ctrl+left moves by word":
+    var ed = initEditor()
+    let d = newDriver()
+    d.pushString "one two"
+    d.push CtrlLeft
+    d.push Enter
+    discard d.run(ed, prompt = "> ")
+    # position was 4 before submit; verify via a live run
+    var ed2 = initEditor()
+    let d2 = newDriver()
+    d2.pushString "one two"
+    d2.push CtrlLeft
+    expect EOFError:
+      discard d2.run(ed2, prompt = "> ")
+    check ed2.line.position == 4

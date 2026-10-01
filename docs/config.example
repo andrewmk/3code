@@ -30,13 +30,20 @@ current = "ollama.qwen3-coder:480b"
 ; [shortcuts] remaps editor commands. Value is a space-separated list of
 ; keys; empty string unbinds. Defaults match today's hardcoded behaviour.
 ; Key syntax: ESC / Escape, CtrlX / Ctrl+X, AltX / Alt+X, Home, End, Up,
-; Down, Left, Right, Insert, Delete, Backspace, Tab, ShiftTab. Prefix
-; Double for two consecutive presses (DoubleCtrlC, DoubleESC).
+; Down, Left, Right, Insert, Delete, Backspace, Tab, ShiftTab, and the
+; modified navigation keys ShiftLeft, ShiftHome, CtrlLeft, CtrlRight,
+; CtrlDelete, CtrlShiftLeft, CtrlShiftEnd, ... Prefix Double for two
+; consecutive presses (DoubleCtrlC, DoubleESC).
 ; Commands: cancel, clear, quit-if-empty, home, end, left, right,
 ; word-left, word-right, up, down, history-previous, history-next,
 ; backspace, delete, insert, delete-word-left, delete-to-boundary-left,
-; clear-screen, suspend, complete, reverse-complete, edit-in-editor,
-; insert-newline. `clear` also adds the discarded text to history.
+; delete-word-right, delete-to-boundary-right, delete-to-eol,
+; delete-to-bol, clear-screen, suspend, complete, reverse-complete,
+; edit-in-editor, insert-newline, buffer-start, buffer-end,
+; select-left, select-right, select-up, select-down, select-home,
+; select-end, select-word-left, select-word-right, select-all,
+; select-buffer-start, select-buffer-end, cut, copy, paste, yank,
+; transpose-chars. `clear` also adds the discarded text to history.
 ; [shortcuts]
 ; cancel = "DoubleESC CtrlC"
 ; clear = "ESC"
