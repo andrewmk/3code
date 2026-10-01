@@ -258,6 +258,19 @@ initLock(wizardRequestLock)
 var inputThread: Thread[void]
 var inputThreadRunning* = false
 
+func structuralTailByte(b: int): bool =
+  ## Structural tail bytes of CSI / OSC replies that can land before the
+  ## first prompt: `ESC [ A` (arrow), `ESC [ 6 n` (DSR), `ESC ] 11 ;
+  ## rgb:..BEL` (a late OSC 11 background reply). The OSC charset adds
+  ## `]`, the `rgb:` label, the `/` separators, hex letters, and the BEL
+  ## terminator. Both startup drains consume whole sequences (after
+  ## dropping the ESC) so they never surface as ghost characters in the
+  ## fresh prompt.
+  b in {'['.ord, 'O'.ord, ']'.ord} or b in {'0'.ord..'9'.ord} or
+    b in {'a'.ord..'f'.ord, 'A'.ord..'F'.ord} or
+    b in {';'.ord, '?'.ord, '~'.ord, ':'.ord, '/'.ord, 7.ord} or
+    b in {'H'.ord, 'R'.ord, 'c'.ord, 'Z'.ord, 'r'.ord, 'g'.ord, 'b'.ord}
+
 # The input thread owns the only code path that puts stdin into raw mode
 # for sustained periods (the cancel watcher is transient). Its saved
 # termios snapshot is kept here as module-level state so cleanup can
@@ -269,6 +282,11 @@ when defined(posix):
 when defined(windows):
   var inputOrigConsoleMode: int32 = 0
   var inputOrigConsoleModeValid = false
+  var vtInputEnabled = false
+    ## Set when the console accepted ENABLE_VIRTUAL_TERMINAL_INPUT: keys
+    ## arrive as VT escape bytes (ESC-prefixed sequences) instead of
+    ## `_getch` 0/224 pairs, so the editor decodes them with the same
+    ## KEYSEQS tables every other platform uses.
 
 proc restoreInputTermios*() {.noconv.} =
   ## Restore stdin's termios to the snapshot the input thread captured
@@ -2130,20 +2148,7 @@ proc inputThreadProc() {.thread.} =
                 # Drop ESC; structural tail bytes are consumed below.
                 pendingInput.delete(0)
                 continue
-              # Structural tail bytes of CSI / OSC replies that can land
-              # before the first prompt: `ESC [ A` (arrow), `ESC [ 6 n`
-              # (DSR), `ESC ] 11 ; rgb:..BEL` (a late OSC 11 background
-              # reply). The OSC charset adds `]`, the `rgb:` label, the
-              # `/` separators, hex letters, and the BEL terminator, so
-              # the whole reply drains here (the ESC was dropped above)
-              # instead of surfacing as a ghost `]11;rgb:...` prompt.
-              if pendingInput[0] in {'['.ord, 'O'.ord, ']'.ord} or
-                 pendingInput[0] in {'0'.ord..'9'.ord} or
-                 pendingInput[0] in {'a'.ord..'f'.ord, 'A'.ord..'F'.ord} or
-                 pendingInput[0] in {';'.ord, '?'.ord, '~'.ord, ':'.ord,
-                   '/'.ord, 7.ord} or
-                 pendingInput[0] in {'H'.ord, 'R'.ord, 'c'.ord, 'Z'.ord,
-                   'r'.ord, 'g'.ord, 'b'.ord}:
+              if structuralTailByte(pendingInput[0]):
                 pendingInput.delete(0)
                 continue
               break
@@ -2194,20 +2199,26 @@ proc inputThreadProc() {.thread.} =
           # pressed while the app was booting); see the posix branch above
           # for the full rationale. Console keys arrive as two-byte
           # `<prefix>, <key>` pairs via `_getch`, so whole pairs are
-          # drained; a real typed byte ends the drain and is kept.
+          # drained; a real typed byte ends the drain and is kept. Under
+          # VT input there are no pairs: an ESC-prefixed sequence drains
+          # through the same structural-tail charset the posix drain
+          # uses, so `ESC [ 1 ; 2 D` never leaks a ghost `[1;2D`.
           if not startupDrainDone:
             let drainDeadline = epochTime() + 0.5
             while epochTime() < drainDeadline and conioKbhit() != 0:
               let first = getchr().int
               if first in minline.ESCAPES:
-                # The pair's tail can trail its prefix by a scheduler
-                # tick; without the wait a lone tail byte would surface
-                # as a ghost character in the fresh prompt.
-                let tailDeadline = epochTime() + 0.05
-                while epochTime() < tailDeadline and conioKbhit() == 0:
-                  sleep(1)
-                if conioKbhit() != 0:
-                  discard getchr()
+                if not vtInputEnabled:
+                  # The pair's tail can trail its prefix by a scheduler
+                  # tick; without the wait a lone tail byte would surface
+                  # as a ghost character in the fresh prompt.
+                  let tailDeadline = epochTime() + 0.05
+                  while epochTime() < tailDeadline and conioKbhit() == 0:
+                    sleep(1)
+                  if conioKbhit() != 0:
+                    discard getchr()
+                continue
+              if vtInputEnabled and structuralTailByte(first):
                 continue
               drainedChar = first
               break
@@ -2374,8 +2385,17 @@ proc inputThreadProc() {.thread.} =
       if getConsoleMode(h, addr mode) != 0:
         inputOrigConsoleMode = mode
         inputOrigConsoleModeValid = true
-        discard setConsoleMode(h, mode and not
+        # ENABLE_VIRTUAL_TERMINAL_INPUT makes the console deliver keys as
+        # VT escape sequences (arrows `ESC [ X`, modified keys
+        # `CSI 1;<mod>X`), the same byte grammar every other platform
+        # sends, so Shift/Ctrl+arrow selection works cross-platform with
+        # one decoder. Windows Terminal accepts the flag; legacy conhost
+        # (pre-1607) rejects it and the editor keeps the `_getch` codes.
+        discard setConsoleMode(h, (mode or 0x0200'i32) and not
           (ENABLE_PROCESSED_INPUT or ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT))
+        var now: int32 = 0
+        if getConsoleMode(h, addr now) != 0:
+          vtInputEnabled = (now and 0x0200'i32) != 0
       # Route Ctrl-C / Ctrl-Break (real console) straight to the turn-
       # interrupt path via the console control handler.
       discard setConsoleCtrlHandler(
