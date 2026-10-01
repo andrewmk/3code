@@ -1740,13 +1740,12 @@ when defined(posix):
     discard setsockopt(sock.getFd(), SOL_SOCKET, SO_RCVTIMEO,
                        addr tv, sizeof(tv).SockLen)
 
-const EnvelopeBytes = 900_000
-
 type
   BadServer = ref object
     sock: Socket
     running: bool
     rejectSummarizer: bool
+    envelope: int
     port: int
 
 proc handle(server: BadServer, client: Socket) =
@@ -1771,7 +1770,7 @@ proc handle(server: BadServer, client: Socket) =
     proc reply(client: Socket, body: string) =
       client.send(head & $body.len & "\r\nConnection: close\r\n\r\n" & body)
     let isSummarizer = body.find("You are summarizing") >= 0
-    if body.len > EnvelopeBytes or (isSummarizer and server.rejectSummarizer):
+    if body.len > server.envelope or (isSummarizer and server.rejectSummarizer):
       let err = $(%*{"error": {"message": "inference_failed"}})
       client.send("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n" &
         "Content-Length: " & $err.len & "\r\nConnection: close\r\n\r\n" & err)
@@ -1806,7 +1805,7 @@ proc serve(server: BadServer) {.thread.} =
     try: client.close() except CatchableError: discard
 
 proc newBadServer(): BadServer =
-  result = BadServer(sock: newSocket(), running: true)
+  result = BadServer(sock: newSocket(), running: true, envelope: 900_000)
   result.sock.setSockOpt(OptReuseAddr, true)
   result.sock.bindAddr(Port(0))
   result.sock.listen()
@@ -1869,6 +1868,33 @@ block scenario_b:
     "B: no fallback recap: " & messages[1]{"content"}.getStr
   echo "SCENARIO_B_OK"
 
+block scenario_c:
+  # Proactive guard: an opencode (Zen) profile whose request body crosses
+  # the 1MB guard must collapse at end of turn WITHOUT any 400 — the call
+  # succeeds (envelope raised to 2MB), and the byte guard fires on the
+  # measured body size, not on a rejection.
+  server.rejectSummarizer = false
+  server.envelope = 2_000_000
+  let zenProfile = Profile(name: "opencode.glm-5.2",
+    url: "http://127.0.0.1:" & $server.port,
+    key: "k", family: "glm", model: "glm-5.2")
+  var messages = %*[{"role": "system", "content": "sys"}]
+  for i in 1..17:
+    messages.add %*{"role": "user", "content": "turn " & $i & " " & "x".repeat(60000)}
+  var session: Session
+  session.savePath = ""
+  session.readCache = newReadCache()
+  discard runTurnsInteractive(zenProfile, messages, session)
+  let last = messages[^1]
+  doAssert last{"role"}.getStr == "assistant",
+    "C: last role " & last{"role"}.getStr
+  doAssert "RECOVERED_AFTER_SUMMARY" in last{"content"}.getStr,
+    "C: content " & last{"content"}.getStr
+  doAssert messages.len == 10, "C: " & $messages.len & " messages"
+  doAssert SummaryPrefix in messages[1]{"content"}.getStr,
+    "C: no synthetic recap: " & messages[1]{"content"}.getStr
+  echo "SCENARIO_C_OK"
+
 server.running = false
 server.sock.close()
 joinThread(serveThread)
@@ -1892,6 +1918,9 @@ joinThread(serveThread)
     check "SCENARIO_A_OK" in runOut
     # Scenario B: summarizer itself rejected, local fallback recap.
     check "SCENARIO_B_OK" in runOut
+    # Scenario C: proactive guard collapses without any 400 at all.
+    check "SCENARIO_C_OK" in runOut
     check "request rejected as too large" in runOut
     check "collapsed 12 messages into a recap" in runOut
     check "collapsed 12 messages without a recap" in runOut
+    check "gateway byte guard" in runOut

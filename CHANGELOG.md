@@ -15,7 +15,13 @@ Changelog
   locally so the session still recovers instead of dead-ending
   forever. The summarizer payload is also clipped to ~768KB of message
   text, so the rescue call itself fits the envelope that killed the
-  main request. Cached transport connections that the server closed
+  main request. On top of the reactive recovery, a proactive guard
+  measures the exact serialized request body after every call and, for
+  the Zen-family providers only (`opencode`, `opencodego`), collapses
+  the history once it crosses 1MB — under the tightest route envelope
+  observed — so the oversized request is never sent at all; token
+  counts cannot predict a byte limit, but the body size 3code just
+  sent can. Cached transport connections that the server closed
   (`Connection: close`) are no longer reused: a non-blocking peek
   drops the dead socket before `send` can wedge in an unobservable
   spin, which the recovery retry could hit when the gateway closed

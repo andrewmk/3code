@@ -453,6 +453,13 @@ proc emptyReplyWait*(): bool =
 # cache so the next turn starts on a fresh socket.
 var cachedStreamConn: StreamConn
 var cachedStreamHostKey: string
+var lastRequestBodyBytes* = 0
+  ## Byte length of the body the most recent real (non-stub) `callModel`
+  ## serialized for the wire. Published for the turn loop's byte-envelope
+  ## guard: Zen-family gateways reject oversized request bodies with an
+  ## opaque 400 well before the token context limit, and only the actual
+  ## body size (tools + system + history, after provider-specific
+  ## wrapping) predicts that — token counts cannot.
 # Mirror of the cached conn's fd, kept current so the SIGINT hook and
 # the stdin watcher thread can `posix.shutdown` it without touching
 # the GC'd `StreamConn` ref. Set/cleared alongside `cachedStreamConn`.
@@ -2992,6 +2999,10 @@ proc callModel*(p: Profile, messages: JsonNode, usage: var Usage,
           sanitizeUtf8(anthropicBody(p, body))
         else:
           sanitizeUtf8($body)
+  # Exact wire size of the request about to go out. The Zen byte-envelope
+  # guard in the turn loop keys off this; set before any send attempt so
+  # even a failed/retried call reports the size that was rejected.
+  lastRequestBodyBytes = bodyStr.len
   if "\"usage\"" in bodyStr:
     stderr.writeLine "3code: BUG: usage in wireMessages"
     for i, m in wireMessages:

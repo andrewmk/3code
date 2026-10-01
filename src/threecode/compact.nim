@@ -62,6 +62,15 @@ const
     ## that same envelope even when the conversation it summarizes does
     ## not, so oversized message text is clipped to a per-message budget
     ## derived from this cap.
+  SummarizeByteGuardBytes* = 1_000_000
+    ## Proactive request-size ceiling for the Zen-family gateways
+    ## (opencode/opencodego). Their byte envelope is undocumented and
+    ## route-variable — observed between roughly one and two MB
+    ## (anomalyco/opencode#35013, capocasa/3code#48) — so the guard sits
+    ## under the tightest observed envelope and fires while every known
+    ## route would still accept the request. Other providers are not
+    ## guarded: several accept multi-MB bodies and would get pointless
+    ## lossy summarization.
   OverflowFallbackSummary* = "Earlier turns were dropped without a recap " &
     "because the provider rejected the conversation as too large and the " &
     "summarizer call failed as well; the recent messages below are " &

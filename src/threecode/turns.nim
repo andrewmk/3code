@@ -903,14 +903,27 @@ proc runTurns*(p: Profile, messages: var JsonNode, session: var Session): bool =
     messages.add msg
     saveSession(session, messages)
     let window = contextWindowFor(p)
-    case decideContextAction(usage.promptTokens, window, messages.len)
+    var action = decideContextAction(usage.promptTokens, window, messages.len)
+    # Zen byte-envelope guard: the token threshold above cannot predict a
+    # request-size rejection (bytes and tokens are different axes), so for
+    # the gateways known to enforce one, the exact body size just sent
+    # drives the same collapse proactively — before any route can 400 it.
+    var byteGuard = false
+    if action == caNone and providerOf(p) in ["opencode", "opencodego"] and
+        lastRequestBodyBytes >= SummarizeByteGuardBytes:
+      action = caSummarize
+      byteGuard = true
+    case action
     of caSummarize:
       let summarized = summarizeHistory(messages, p)
       if summarized > 0:
         commitTranscriptBytes(
           hintLnS(&"· summarized {summarized} message" &
             (if summarized == 1: "" else: "s") &
-            &" (context at {humanTokens(usage.promptTokens)}/{humanTokens(window)} tokens)"), true)
+            (if byteGuard:
+               &" (request body {humanBytes(lastRequestBodyBytes)}; gateway byte guard)"
+             else:
+               &" (context at {humanTokens(usage.promptTokens)}/{humanTokens(window)} tokens)")), true)
         saveSession(session, messages)
     of caNone: discard
     if toolCalls.len > 0:
