@@ -348,3 +348,32 @@ suite "util: httpStatusDetail":
     let d = httpStatusDetail("index 4 notin 0 .. 3")
     check "out of range" in d
     check "index 4" in d
+
+suite "util: plainHttpHost":
+  test "loopback and mDNS-style names are local":
+    for h in ["localhost", "LOCALHOST", "foo.localhost", "nas.local",
+              "Mac-Studio.local", "printer.localdomain"]:
+      check plainHttpHost(h)
+
+  test "loopback, RFC1918, and link-local IPv4 are local":
+    for h in ["127.0.0.1", "127.0.0.5", "127.8.8.8", "10.0.0.5",
+              "172.16.0.1", "172.31.255.254", "192.168.64.1",
+              "192.168.1.100", "169.254.10.20"]:
+      check plainHttpHost(h)
+
+  test "IPv6 loopback, link-local (with zone), and ULA are local":
+    for h in ["::1", "[::1]", "fe80::1", "fe80::1%en0", "febf::",
+              "fc00::1", "fd12:3456::789"]:
+      check plainHttpHost(h)
+
+  test "public and carrier-grade-NAT hosts are not local":
+    for h in ["api.openai.com", "example.org", "8.8.8.8", "172.32.0.1",
+              "172.15.0.1", "192.169.1.1", "100.63.0.1", "100.64.0.1",
+              "100.128.0.1", "2600::", "2607:f8b0::1", "2001:db8::1",
+              "::ffff:192.168.1.5", "nas.lan"]:
+      check not plainHttpHost(h)
+
+  test "malformed hosts are not local":
+    for h in ["", "999.999.999.999", "192.168", "192.168.1.1.",
+              "192.168.0.256"]:
+      check not plainHttpHost(h)

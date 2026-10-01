@@ -528,6 +528,44 @@ proc connectErrorDetail*(e: ref CatchableError): string =
   else:
     result = msg
 
+proc plainHttpHost*(host: string): bool =
+  ## True when `host` can only address this machine or the LAN: loopback,
+  ## link-local, RFC1918 private ranges, IPv6 ULA/link-local, and
+  ## mDNS-style names. Plain HTTP is allowed only for these hosts
+  ## (local inference servers: Ollama and friends on
+  ## `http://192.168.64.1:8181/v1`); everything else keeps the
+  ## https-only rule so keys and prompts never cross a public network in
+  ## the clear. Resolvable names like `nas.lan` stay https-only: a name
+  ## that must resolve can be pointed anywhere.
+  let h = host.toLowerAscii
+  if h.len == 0: return false
+  if h == "localhost" or h == "::1" or h == "[::1]" or
+     h.endsWith(".localhost") or h.endsWith(".local") or
+     h.endsWith(".localdomain"):
+    return true
+  if h.startsWith('[') and h.endsWith(']'):
+    return plainHttpHost(h[1 ..< h.len - 1])
+  if h.contains(':'):
+    # IPv6. Drop a zone id (fe80::1%en0), then inspect the first group.
+    let bare = if h.contains('%'): h[0 ..< h.find('%')] else: h
+    let head = bare[0 ..< bare.find(':')]
+    if head.len == 0: return false  # leading-:: elision beyond ::1
+    let g = try: parseHexInt(head) except ValueError: return false
+    return (g and 0xffc0) == 0xfe80 or  # fe80::/10 link-local
+           (g and 0xfe00) == 0xfc00     # fc00::/7 ULA
+  # Dotted-quad IPv4: parse octets, then check loopback/private ranges.
+  let parts = h.split('.')
+  if parts.len != 4: return false
+  var o: array[4, int]
+  for i, p in parts:
+    if p.len == 0 or p.len > 3 or not p.allCharsInSet(Digits): return false
+    o[i] = parseInt(p)
+    if o[i] > 255: return false
+  o[0] == 127 or o[0] == 10 or
+    (o[0] == 172 and o[1] >= 16 and o[1] <= 31) or
+    (o[0] == 192 and o[1] == 168) or
+    (o[0] == 169 and o[1] == 254)
+
 proc endpointLabel*(host: string; port: Port; plainHttp: bool): string =
   ## Host as shown in connect-failure messages: the bare host on the
   ## scheme's default port, `host:port` when the URL named a specific one
