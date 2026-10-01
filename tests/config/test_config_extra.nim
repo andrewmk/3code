@@ -55,6 +55,40 @@ suite "config: [settings] max_timeout":
     writeConfigFile(tmp, "", @[])
     check not readFile(tmp).contains("max_timeout")
 
+suite "config: [settings] browserfetch":
+  var tmp = ""
+
+  setup:
+    tmp = getTempDir() / "3code-test-browserfetch.ini"
+    browserFetchEnabled = false
+
+  teardown:
+    removeFile(tmp)
+    browserFetchEnabled = false
+
+  test "parse accepts on and off":
+    writeFile(tmp, "[settings]\nbrowserfetch = on\n")
+    discard parseConfigFile(tmp)
+    check browserFetchEnabled
+    writeFile(tmp, "[settings]\nbrowserfetch = \"off\"\n")
+    discard parseConfigFile(tmp)
+    check not browserFetchEnabled
+
+  test "writer persists on and omits the default off":
+    browserFetchEnabled = true
+    writeConfigFile(tmp, "test.model-a", @[])
+    check readFile(tmp).find("browserfetch = \"on\"") >= 0
+    browserFetchEnabled = false
+    discard parseConfigFile(tmp)
+    check browserFetchEnabled
+    # a write with the setting off and no on-disk copy omits it again.
+    # (writeConfigFile re-parses the disk file, which re-sets the globals,
+    # so the omission needs the file gone first.)
+    removeFile(tmp)
+    browserFetchEnabled = false
+    writeConfigFile(tmp, "test.model-a", @[])
+    check readFile(tmp).find("browserfetch") < 0
+
 suite "config: parseConfigFile round-trip":
   var tmp = ""
 

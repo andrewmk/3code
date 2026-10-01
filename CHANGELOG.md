@@ -46,6 +46,15 @@ Changelog
   balance); anthropic and nanogpt keys here lack credit/a valid
   session, so those rows stay table-verified.
 
+- **Test build: browser-backed `web_fetch` behind `browserfetch = on`.**
+  When the plain fetch survives tag-stripping as almost nothing (a JS
+  shell, e.g. a Reddit profile), the fetch is redone in a shared headless
+  Chrome and the rendered page text is returned instead. One browser per
+  machine (own throwaway profile, 127.0.0.1:9223, launched by the first
+  3code that needs it and reused by every later one), one tab per fetch.
+  Default off; `ws` is a new dependency. Anti-bot walls still apply: a
+  fresh headless profile gets Reddit's "Prove your humanity" challenge.
+
 - **The occasional "submit deletes the line above the prompt" is fixed.**
   A multi-row draft in the buffered mid-turn editor (history recall,
   shift+enter, typing during the stream) made the answer-start erase

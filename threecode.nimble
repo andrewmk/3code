@@ -13,6 +13,7 @@ requires "tinotify >= 0.1.3"
 requires "sandwall >= 0.5.8"
 requires "libsha >= 1.0"
 requires "zippy >= 0.10"
+requires "ws >= 0.6.0"
 
 task test, "Run the test suite via testament (all, or named files)":
   var files: seq[string] = @[]
