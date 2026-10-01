@@ -91,6 +91,15 @@ curl -fsSL https://3code.capocasa.dev/install | sh
 irm https://3code.capocasa.dev/install.ps1 | iex
 ```
 
+The install script is the recommended way to install 3code. npm is there
+for those who prefer it:
+
+```
+npm install -g 3code
+```
+
+Both install the same release binaries.
+
 ### Manual install on Windows
 
 The PowerShell one-liner also downloads a private PortableGit tree (bash

@@ -1,0 +1,33 @@
+{
+  "name": "3code",
+  "version": "0.8.0",
+  "description": "The economical coding agent. It's so lean you can use it for free!",
+  "license": "MIT",
+  "bin": {
+    "3code": "bin/3code.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/capocasa/3code.git"
+  },
+  "homepage": "https://3code.capocasa.dev",
+  "bugs": "https://github.com/capocasa/3code/issues",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "nim"
+  ],
+  "files": [
+    "bin/3code.js",
+    "install.js",
+    "LICENSE",
+    "README.md"
+  ]
+}
