@@ -179,6 +179,58 @@ suite "streamexec: special characters":
     check code == 0
     check lines[0].contains("●")
 
+suite "streamexec: terminal control bytes in tool output":
+  # Tool output that is itself terminal frames (a nested TUI under a pipe)
+  # carries cursor controls. The reader models one physical line, so the
+  # bytes must be interpreted against that model — never passed through to
+  # be painted inside the fat prompt's own rows (the report.md corruption:
+  # duplicated bars/prompts stacked up the screen, rows shifting).
+  test "vertical cursor moves end lines, EL clears, colors stay":
+    var lines: seq[string]
+    # One nested frame: a meter row, then CR + CUU + EL + the notice row.
+    let act = Action(kind: akBash,
+      body: "printf '  meter 1'; printf '\\r\\033[1A\\033[2K  notice 1'; printf '\\n'; " &
+        "printf '  meter 2'; printf '\\r\\033[1A\\033[2K  notice 2'; printf '\\n'")
+    let (rawOut, code, _) = runStreamingBash(act, nil,
+      proc(line: string) = lines.add(line))
+    check code == 0
+    check lines == @["  meter 1", "  notice 1", "  meter 2", "  notice 2"]
+    check rawOut == "  meter 1\n  notice 1\n  meter 2\n  notice 2\n"
+
+  test "EL0 truncates at the column, CUB/CUF move within the line":
+    var lines: seq[string]
+    let act = Action(kind: akBash,
+      body: "printf 'abcdef'; printf '\\033[2D\\033[K'; printf '\\n'; " &
+        "printf 'ab'; printf '\\033[2C'; printf 'Z'; printf '\\n'")
+    let (rawOut, _, _) = runStreamingBash(act, nil,
+      proc(line: string) = lines.add(line))
+    check lines == @["abcd", "ab  Z"]
+    check rawOut == "abcd\nab  Z\n"
+
+  test "backspace erases a column":
+    var lines: seq[string]
+    let act = Action(kind: akBash, body: "printf 'abc\\b\\bx'; printf '\\n'")
+    let (_, _, _) = runStreamingBash(act, nil,
+      proc(line: string) = lines.add(line))
+    check lines == @["axc"]
+
+  test "SGR color passes through on a growing line":
+    var lines: seq[string]
+    let act = Action(kind: akBash,
+      body: "printf '\\033[31mred\\033[0m\\n'")
+    let (_, _, _) = runStreamingBash(act, nil,
+      proc(line: string) = lines.add(line))
+    check lines == @["\x1b[31mred\x1b[0m"]
+
+  test "OSC queries drop without touching rows":
+    var lines: seq[string]
+    let act = Action(kind: akBash,
+      body: "printf 'a\\033]11;?\\007b\\n'")
+    let (rawOut, _, _) = runStreamingBash(act, nil,
+      proc(line: string) = lines.add(line))
+    check lines == @["ab"]
+    check rawOut == "ab\n"
+
 suite "streamexec: binary output suppression":
   test "suppresses streaming callback after NUL byte":
     var lines: seq[string]
