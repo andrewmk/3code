@@ -874,7 +874,7 @@ proc streamHttp(url, key, bodyStr: string, baseLabel: string,
   let host = u.hostname
   let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
+    result.errMsg = "plain http is only allowed for local/LAN hosts, got: " & host
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1390,7 +1390,7 @@ proc streamResponses(url, key, bodyStr: string, baseLabel: string,
   let host = u.hostname
   let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
+    result.errMsg = "plain http is only allowed for local/LAN hosts, got: " & host
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1665,7 +1665,7 @@ proc callHttp(url, key, bodyStr: string; baseLabel: string;
   let host = u.hostname
   let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
+    result.errMsg = "plain http is only allowed for local/LAN hosts, got: " & host
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1911,7 +1911,7 @@ proc callResponses(url, key, bodyStr: string; baseLabel: string;
   let host = u.hostname
   let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
+    result.errMsg = "plain http is only allowed for local/LAN hosts, got: " & host
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -3305,7 +3305,7 @@ proc verifyProfile*(p: Profile): (bool, string) =
   let host = u.hostname
   let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    return (false, "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme)
+    return (false, "plain http is only allowed for local/LAN hosts, got: " & host)
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
     elif plainHttp: Port(80)

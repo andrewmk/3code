@@ -350,37 +350,30 @@ suite "util: httpStatusDetail":
     check "index 4" in d
 
 suite "util: plainHttpHost":
-  test "loopback names and addresses":
-    check plainHttpHost("localhost")
-    check plainHttpHost("127.0.0.1")
-    check plainHttpHost("127.0.0.5")
-    check plainHttpHost("::1")
-    check plainHttpHost("[::1]")
+  test "loopback and mDNS-style names are local":
+    for h in ["localhost", "LOCALHOST", "foo.localhost", "nas.local",
+              "Mac-Studio.local", "printer.localdomain"]:
+      check plainHttpHost(h)
 
-  test "private LAN ranges":
-    check plainHttpHost("192.168.64.1")
-    check plainHttpHost("192.168.1.100")
-    check plainHttpHost("10.0.0.5")
-    check plainHttpHost("172.16.0.1")
-    check plainHttpHost("172.31.255.254")
-    check plainHttpHost("169.254.10.20")
-    check plainHttpHost("100.64.0.1")
+  test "loopback, RFC1918, and link-local IPv4 are local":
+    for h in ["127.0.0.1", "127.0.0.5", "127.8.8.8", "10.0.0.5",
+              "172.16.0.1", "172.31.255.254", "192.168.64.1",
+              "192.168.1.100", "169.254.10.20"]:
+      check plainHttpHost(h)
 
-  test "mDNS-style names":
-    check plainHttpHost("myserver.local")
-    check plainHttpHost("Mac-Studio.local")
+  test "IPv6 loopback, link-local (with zone), and ULA are local":
+    for h in ["::1", "[::1]", "fe80::1", "fe80::1%en0", "febf::",
+              "fc00::1", "fd12:3456::789"]:
+      check plainHttpHost(h)
 
-  test "public hosts rejected":
-    check not plainHttpHost("api.openai.com")
-    check not plainHttpHost("8.8.8.8")
-    check not plainHttpHost("172.32.0.1")
-    check not plainHttpHost("172.15.0.1")
-    check not plainHttpHost("192.169.1.1")
-    check not plainHttpHost("100.63.0.1")
-    check not plainHttpHost("100.128.0.1")
+  test "public and carrier-grade-NAT hosts are not local":
+    for h in ["api.openai.com", "example.org", "8.8.8.8", "172.32.0.1",
+              "172.15.0.1", "192.169.1.1", "100.63.0.1", "100.64.0.1",
+              "100.128.0.1", "2600::", "2607:f8b0::1", "2001:db8::1",
+              "::ffff:192.168.1.5", "nas.lan"]:
+      check not plainHttpHost(h)
 
-  test "garbage rejected":
-    check not plainHttpHost("")
-    check not plainHttpHost("999.999.999.999")
-    check not plainHttpHost("192.168")
-    check not plainHttpHost("192.168.1.1.")
+  test "malformed hosts are not local":
+    for h in ["", "999.999.999.999", "192.168", "192.168.1.1.",
+              "192.168.0.256"]:
+      check not plainHttpHost(h)
