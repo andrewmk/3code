@@ -756,29 +756,46 @@ proc mergeForeignEdits(path: string; current: var string,
   providers = merged
   true
 
-func normalizedCurrent(current: string): string =
+func normalizedCurrent(current: string; providers: seq[ProviderRec]): string =
   ## `current` may hold a wire-style model id; persist the normalized
-  ## spelling. Only the model part: running the whole "provider.model"
-  ## string through normalizeModelName strips everything up to the model's
-  ## last `/`, which drops the provider name entirely for ids like
-  ## "baseten.zai-org/GLM-4.7" and leaves an unbootable current.
+  ## spelling when the pair is curated (the known-good table repairs
+  ## the wire id back at load time). Custom providers keep the id
+  ## verbatim: the normalizer is lossy for ids it can't round-trip
+  ## (`qwen3.6:latest` -> `qwen-3.6:latest`), and with no table entry
+  ## nothing maps it back, so the mangled id would 404 on the wire.
+  ## Only the model part is normalized: running the whole
+  ## "provider.model" string through normalizeModelName strips
+  ## everything up to the model's last `/`, which drops the provider
+  ## name entirely for ids like "baseten.zai-org/GLM-4.7".
   let curDot = current.find('.')
-  if curDot < 0: normalizeModelName(current)
-  else: current[0 .. curDot] & normalizeModelName(current[curDot + 1 .. ^1])
+  if curDot < 0: return current
+  let provName = current[0 ..< curDot]
+  let model = current[curDot + 1 .. ^1]
+  for pr in providers:
+    if pr.name == provName and
+       knownGoodWireModel(pr.name, model) == "":
+      return current
+  provName & "." & normalizeModelName(model)
 
 proc writeConfigFile*(path: string, current: string,
                      providers: seq[ProviderRec]) =
   createDir(path.parentDir)
-  # Models are always persisted in normalized form; the wire ids stay
-  # untouched in memory. `current` may name a model too. Twin spellings
-  # of one model dedup to the first, so the file self-heals lists that
-  # were written before they collapsed.
+  # Models are persisted in normalized form when the pair is curated
+  # (the known-good table repairs the wire id back at load time); the
+  # wire ids stay untouched in memory. `current` may name a model too.
+  # Twin spellings of one model dedup to the first, so the file
+  # self-heals lists that were written before they collapsed.
+  # Experimental/custom providers keep the id verbatim: the normalizer
+  # is lossy for ids it can't round-trip (`qwen3.6:latest` ->
+  # `qwen-3.6:latest`), and with no table entry nothing maps it back,
+  # so the mangled id would go on the wire and 404.
   var providers = providers
   for pr in providers.mitems:
-    pr.models = dedupModels(pr.models.mapIt(normalizeModelName(it)))
+    pr.models = dedupModels(pr.models.mapIt(
+      if knownGoodWireModel(pr.name, it) != "": normalizeModelName(it) else: it))
   var current = current
   if not mergeForeignEdits(path, current, providers): return
-  let cur = normalizedCurrent(current)
+  let cur = normalizedCurrent(current, providers)
   var buf = "[settings]\n"
   buf.add "current = " & quoteVal(cur) & "\n"
   if activeSearchKeys.len > 0 or activeSearchEngine != "exa":
@@ -824,8 +841,15 @@ proc writeConfigFile*(path: string, current: string,
       buf.add "family = " & quoteVal(pr.family) & "\n"
     buf.add "models = " & quoteVal(formatModels(pr.models)) & "\n"
     if pr.currentModel != "":
-      buf.add "current_model = " &
-        quoteVal(normalizeModelName(pr.currentModel)) & "\n"
+      # Same curated/verbatim rule as the models list: normalized when
+      # the known-good table can repair the wire id back at load time,
+      # verbatim for custom providers whose id the normalizer cannot
+      # round-trip.
+      let cm =
+        if knownGoodWireModel(pr.name, pr.currentModel) != "":
+          normalizeModelName(pr.currentModel)
+        else: pr.currentModel
+      buf.add "current_model = " & quoteVal(cm) & "\n"
     if pr.reasoning != "":
       buf.add "reasoning = " & quoteVal(pr.reasoning) & "\n"
     if pr.reasonings.len > 0:
@@ -1247,6 +1271,12 @@ proc looksLikeApiKey*(s: string): bool =
 proc defaultNameFromUrl*(url: string): string =
   let host = parseUri(url).hostname
   if host == "": return ""
+  # Provider names live inside `provider.model` dot-joined ids everywhere
+  # (config `current`, Profile.name, providerOf's find('.')), so a name
+  # containing a dot breaks the split. Dotted-quad hosts therefore mangle
+  # to a dash form (127.0.0.1 -> "ip-127-0-0-1", not "0").
+  if host.split('.').len == 4 and host.allCharsInSet({'0'..'9', '.'}):
+    return "ip-" & host.replace('.', '-')
   let labels = host.split('.')
   if labels.len >= 2: labels[^2]
   else: labels[0]

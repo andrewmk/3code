@@ -773,12 +773,11 @@ proc requestUrl*(p: Profile): string =
   if chatgptProfile(p): auth_openai.CodexApiUrl
   elif geminicliProfile(p): auth_google.CloudCodeApiUrl
   elif claudecodeProfile(p):
-    # testPlainHttp (also the supported loopback-HTTP escape) keeps a
-    # local server url for the transport tests; everything else pins
+    # A local plain-http server url (transport tests, or a local
+    # Messages-protocol proxy) keeps its url; everything else pins
     # api.anthropic.com, where the subscription token is valid.
-    when defined(testPlainHttp):
-      if p.url.startsWith("http://127.0.0.1"): p.url
-      else: auth_anthropic.ClaudeApiUrl
+    if p.url.startsWith("http://") and
+        plainHttpHost(parseUri(p.url).hostname): p.url
     else: auth_anthropic.ClaudeApiUrl
   else: p.url
 
@@ -873,13 +872,9 @@ proc streamHttp(url, key, bodyStr: string, baseLabel: string,
     result.errMsg = "bad url: " & e.msg
     return
   let host = u.hostname
-  let plainHttp =
-    when defined(testPlainHttp):
-      u.scheme == "http" and (host == "127.0.0.1" or host == "localhost")
-    else:
-      false
+  let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported, got: " & u.scheme
+    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1393,13 +1388,9 @@ proc streamResponses(url, key, bodyStr: string, baseLabel: string,
     result.errMsg = "bad url: " & e.msg
     return
   let host = u.hostname
-  let plainHttp =
-    when defined(testPlainHttp):
-      u.scheme == "http" and (host == "127.0.0.1" or host == "localhost")
-    else:
-      false
+  let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported, got: " & u.scheme
+    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1672,13 +1663,9 @@ proc callHttp(url, key, bodyStr: string; baseLabel: string;
     result.errMsg = "bad url: " & e.msg
     return
   let host = u.hostname
-  let plainHttp =
-    when defined(testPlainHttp):
-      u.scheme == "http" and (host == "127.0.0.1" or host == "localhost")
-    else:
-      false
+  let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported, got: " & u.scheme
+    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -1922,13 +1909,9 @@ proc callResponses(url, key, bodyStr: string; baseLabel: string;
     result.errMsg = "bad url: " & e.msg
     return
   let host = u.hostname
-  let plainHttp =
-    when defined(testPlainHttp):
-      u.scheme == "http" and (host == "127.0.0.1" or host == "localhost")
-    else:
-      false
+  let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    result.errMsg = "only https supported, got: " & u.scheme
+    result.errMsg = "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme
     return
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
@@ -3320,13 +3303,9 @@ proc verifyProfile*(p: Profile): (bool, string) =
   let u = try: parseUri(endpoint) except CatchableError as e:
     return (false, "bad url: " & e.msg)
   let host = u.hostname
-  let plainHttp =
-    when defined(testPlainHttp):
-      u.scheme == "http" and (host == "127.0.0.1" or host == "localhost")
-    else:
-      false
+  let plainHttp = u.scheme == "http" and plainHttpHost(host)
   if u.scheme != "https" and not plainHttp:
-    return (false, "only https supported, got: " & u.scheme)
+    return (false, "only https supported (plain http is allowed for local/LAN hosts), got: " & u.scheme)
   let port =
     if u.port.len > 0: Port(parseInt(u.port))
     elif plainHttp: Port(80)

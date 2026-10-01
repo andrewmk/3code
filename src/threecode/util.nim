@@ -528,6 +528,34 @@ proc connectErrorDetail*(e: ref CatchableError): string =
   else:
     result = msg
 
+proc plainHttpHost*(host: string): bool =
+  ## True for hosts where plain `http://` is accepted: loopback and
+  ## RFC 1918/link-local private addresses (local inference servers on a
+  ## LAN, e.g. `http://192.168.64.1:8181/v1`), plus the `localhost` name
+  ## and mDNS-style `.local` hostnames. Everything else still requires
+  ## https so API keys never cross a public network in cleartext.
+  if host.len == 0: return false
+  if host == "localhost" or host == "::1" or host == "[::1]": return true
+  if host.toLowerAscii.endsWith(".local"): return true
+  # Dotted-quad IPv4: parse octets, then check loopback/private ranges.
+  let parts = host.split('.')
+  if parts.len == 4:
+    var octets: array[4, int]
+    var numeric = true
+    for i, p in parts:
+      if p.len == 0 or p.len > 3 or not p.allCharsInSet(Digits): numeric = false; break
+      octets[i] = parseInt(p)
+      if octets[i] > 255: numeric = false; break
+    if numeric:
+      let (a, b) = (octets[0], octets[1])
+      return a == 127 or                                  # loopback
+             a == 10 or                                   # 10/8
+             (a == 172 and b >= 16 and b <= 31) or        # 172.16/12
+             (a == 192 and b == 168) or                   # 192.168/16
+             (a == 169 and b == 254) or                   # link-local
+             (a == 100 and b >= 64 and b <= 127)          # CGNAT 100.64/10
+  false
+
 proc endpointLabel*(host: string; port: Port; plainHttp: bool): string =
   ## Host as shown in connect-failure messages: the bare host on the
   ## scheme's default port, `host:port` when the URL named a specific one

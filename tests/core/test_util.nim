@@ -348,3 +348,39 @@ suite "util: httpStatusDetail":
     let d = httpStatusDetail("index 4 notin 0 .. 3")
     check "out of range" in d
     check "index 4" in d
+
+suite "util: plainHttpHost":
+  test "loopback names and addresses":
+    check plainHttpHost("localhost")
+    check plainHttpHost("127.0.0.1")
+    check plainHttpHost("127.0.0.5")
+    check plainHttpHost("::1")
+    check plainHttpHost("[::1]")
+
+  test "private LAN ranges":
+    check plainHttpHost("192.168.64.1")
+    check plainHttpHost("192.168.1.100")
+    check plainHttpHost("10.0.0.5")
+    check plainHttpHost("172.16.0.1")
+    check plainHttpHost("172.31.255.254")
+    check plainHttpHost("169.254.10.20")
+    check plainHttpHost("100.64.0.1")
+
+  test "mDNS-style names":
+    check plainHttpHost("myserver.local")
+    check plainHttpHost("Mac-Studio.local")
+
+  test "public hosts rejected":
+    check not plainHttpHost("api.openai.com")
+    check not plainHttpHost("8.8.8.8")
+    check not plainHttpHost("172.32.0.1")
+    check not plainHttpHost("172.15.0.1")
+    check not plainHttpHost("192.169.1.1")
+    check not plainHttpHost("100.63.0.1")
+    check not plainHttpHost("100.128.0.1")
+
+  test "garbage rejected":
+    check not plainHttpHost("")
+    check not plainHttpHost("999.999.999.999")
+    check not plainHttpHost("192.168")
+    check not plainHttpHost("192.168.1.1.")
