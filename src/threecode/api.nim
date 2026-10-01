@@ -494,9 +494,33 @@ proc closeCachedStreamConn*() =
     cachedStreamHostKey = ""
   cachedStreamFd = osInvalidSocket
 
+when defined(posix):
+  var MSG_DONTWAIT {.importc: "MSG_DONTWAIT", header: "<sys/socket.h>".}: cint
+
+proc cachedConnClosedByPeer(): bool =
+  ## Non-blocking peek at the cached fd: a 0-byte read at EOF means the
+  ## peer closed its side (every `Connection: close` reply). EAGAIN means
+  ## nothing pending and the conn is alive; any other error counts as
+  ## dead. Reusing a peer-closed conn wedged `send` in a tight retry that
+  ## never surfaced as an exception, so the stale-cache recovery in
+  ## callHttp/streamHttp never engaged.
+  when defined(posix):
+    let fd = cachedStreamFd
+    if fd == osInvalidSocket: return true
+    var buf: array[1, char]
+    let n = posix.recv(posix.SocketHandle(fd), addr buf[0], 1,
+                       (posix.MSG_PEEK or MSG_DONTWAIT).cint)
+    if n == 0: return true
+    if n > 0: return false
+    let err = errno
+    return not (err == EAGAIN.cint or err == EWOULDBLOCK.cint)
+  else:
+    false
+
 proc acquireStreamConn(host: string; port: Port; plainHttp: bool): StreamConn =
   let identity = (if plainHttp: "http://" else: "https://") & host & ":" & $port.uint16
-  if cachedStreamConn != nil and cachedStreamHostKey == identity:
+  if cachedStreamConn != nil and cachedStreamHostKey == identity and
+      not cachedConnClosedByPeer():
     return cachedStreamConn
   closeCachedStreamConn()
   try:

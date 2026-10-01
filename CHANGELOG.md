@@ -2,6 +2,25 @@ Changelog
 
 **Unreleased**
 
+- **Byte-envelope 400 recovery (issue #48).** Gateways reject oversized
+  request bodies with an opaque 400 (`inference_failed` on OpenCode Zen)
+  while the token count is still far under the advertised context window,
+  so the token-based summarize threshold never fired: every resend
+  carried the same history and 400'd again, and `:summarize` could not
+  rescue either because its meta-call replayed the same oversized
+  payload (upstream anomalyco/opencode#35013 documents the same
+  envelope tripping OpenCode's own TUI). A turn that dies on a 400 with
+  enough history now collapses it once and retries: a real recap when
+  the summarizer call succeeds, otherwise the middle is dropped
+  locally so the session still recovers instead of dead-ending
+  forever. The summarizer payload is also clipped to ~768KB of message
+  text, so the rescue call itself fits the envelope that killed the
+  main request. Cached transport connections that the server closed
+  (`Connection: close`) are no longer reused: a non-blocking peek
+  drops the dead socket before `send` can wedge in an unobservable
+  spin, which the recovery retry could hit when the gateway closed
+  the rejected connection.
+
 - **Flail guard: streak signal no longer flags verification retries.**
   The stuck-streak signal read a long same-tool run of near-identical
   calls as a doom loop even when the run was legitimate

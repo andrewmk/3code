@@ -1703,3 +1703,195 @@ echo "OK"
     check "» Your last reply came back empty." in runOut
     # The old dead-end string must NOT appear when recovery succeeds.
     check "empty reply - no content, no tool calls" notin runOut
+
+suite "runTurns request-size 400 recovery":
+  test "runTurns summarizes and retries when a gateway 400s a byte-large request":
+    # Issue #48: OpenCode Zen rejects oversized request bodies with an
+    # opaque `inference_failed` 400 while the token count is still far
+    # under the context window, so the proactive summarize never fires.
+    # Every resend carried the same history and 400'd again, and :summarize
+    # could not rescue either because its meta-call replayed the same
+    # oversized payload. runTurns must now collapse the history once and
+    # retry; if the summarizer meta-call also fails, the middle is dropped
+    # locally so the session still recovers. The stub provider can't drive
+    # this (summarizeHistory goes through real HTTP), so the probe runs
+    # the real non-stream transport against a local byte-envelope server.
+    let pid = $getCurrentProcessId()
+    let probeDir = getTempDir() / ("tc_size400_" & pid)
+    let probePath = probeDir / "probe.nim"
+    let outPath = probeDir / ("probe" & Exe)
+    let cacheDir = probeDir / "nimcache"
+    createDir(probeDir)
+    createDir(cacheDir)
+    defer:
+      try: removeDir(probeDir) except OSError: discard
+    writeFile(probePath, """
+import std/[json, net, os, strutils]
+import threecode
+import threecode/[api, types, compact]
+
+when defined(posix):
+  import std/posix
+
+  proc setSockTimeoutMs(sock: Socket; ms: int) =
+    var tv: Timeval
+    tv.tv_sec = Time(ms div 1000)
+    tv.tv_usec = Suseconds((ms mod 1000) * 1000)
+    discard setsockopt(sock.getFd(), SOL_SOCKET, SO_RCVTIMEO,
+                       addr tv, sizeof(tv).SockLen)
+
+const EnvelopeBytes = 900_000
+
+type
+  BadServer = ref object
+    sock: Socket
+    running: bool
+    rejectSummarizer: bool
+    port: int
+
+proc handle(server: BadServer, client: Socket) =
+  try:
+    var buf = ""
+    var contentLength = 0
+    while true:
+      let ch = client.recv(1)
+      if ch.len == 0: return
+      buf.add ch
+      if buf.endsWith("\r\n\r\n"): break
+    for line in buf.splitLines:
+      if line.toLowerAscii.startsWith("content-length:"):
+        contentLength = parseInt(line.split(":")[1].strip)
+    var body = ""
+    while body.len < contentLength:
+      let chunk = client.recv(min(4096, contentLength - body.len))
+      if chunk.len == 0: break
+      body.add chunk
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" &
+      "Content-Length: "
+    proc reply(client: Socket, body: string) =
+      client.send(head & $body.len & "\r\nConnection: close\r\n\r\n" & body)
+    let isSummarizer = body.find("You are summarizing") >= 0
+    if body.len > EnvelopeBytes or (isSummarizer and server.rejectSummarizer):
+      let err = $(%*{"error": {"message": "inference_failed"}})
+      client.send("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n" &
+        "Content-Length: " & $err.len & "\r\nConnection: close\r\n\r\n" & err)
+    elif isSummarizer:
+      reply(client, $(%*{"choices": [{"index": 0, "finish_reason": "stop",
+        "message": {"role": "assistant", "content": "recap: earlier turns"}}],
+        "usage": {"prompt_tokens": 50, "completion_tokens": 10,
+                  "total_tokens": 60}}))
+    else:
+      # Small reported usage: the proactive summarize threshold (0.8 of
+      # the window) must never fire, so the recovery can only be the
+      # reactive 400 path under test.
+      reply(client, $(%*{"choices": [{"index": 0, "finish_reason": "stop",
+        "message": {"role": "assistant", "content": "RECOVERED_AFTER_SUMMARY"}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10,
+                  "total_tokens": 110}}))
+  except CatchableError:
+    discard
+
+proc serve(server: BadServer) {.thread.} =
+  while server.running:
+    var client: Socket
+    try:
+      server.sock.accept(client)
+    except OSError:
+      continue
+    if client == nil: continue
+    try:
+      server.handle(client)
+    except CatchableError:
+      discard
+    try: client.close() except CatchableError: discard
+
+proc newBadServer(): BadServer =
+  result = BadServer(sock: newSocket(), running: true)
+  result.sock.setSockOpt(OptReuseAddr, true)
+  result.sock.bindAddr(Port(0))
+  result.sock.listen()
+  setSockTimeoutMs(result.sock, 200)
+  let (_, p) = result.sock.getLocalAddr()
+  result.port = p.int
+
+let server = newBadServer()
+var serveThread: Thread[BadServer]
+createThread(serveThread, serve, server)
+
+# Plain-http loopback + the non-stream transport: the probe asserts the
+# recovery logic, not SSE parsing.
+streamingEnabled = false
+let profile = Profile(name: "nebius.zai-org/GLM-5.2",
+  url: "http://127.0.0.1:" & $server.port,
+  key: "k", family: "glm", model: "zai-org/GLM-5.2")
+
+proc bigHistory(): JsonNode =
+  # 20 turns of 60KB = ~1.2MB of request JSON: over the 900KB envelope,
+  # under any token threshold the fake usage reports. The summarizer's
+  # clip cap (768KB) sits under the envelope, exactly like Zen, so the
+  # clipped meta-call fits even though the raw history does not.
+  result = %*[{"role": "system", "content": "sys"}]
+  for i in 1..20:
+    result.add %*{"role": "user", "content": "turn " & $i & " " & "x".repeat(60000)}
+
+block scenario_a:
+  # Summarizer meta-call succeeds: the turn recovers with a real recap.
+  var messages = bigHistory()
+  var session: Session
+  session.savePath = ""
+  session.readCache = newReadCache()
+  discard runTurnsInteractive(profile, messages, session)
+  let last = messages[^1]
+  doAssert last{"role"}.getStr == "assistant",
+    "A: last role " & last{"role"}.getStr
+  doAssert "RECOVERED_AFTER_SUMMARY" in last{"content"}.getStr,
+    "A: content " & last{"content"}.getStr
+  doAssert messages.len == 11, "A: " & $messages.len & " messages"
+  doAssert SummaryPrefix in messages[1]{"content"}.getStr,
+    "A: no synthetic recap: " & messages[1]{"content"}.getStr
+  echo "SCENARIO_A_OK"
+
+block scenario_b:
+  # Summarizer meta-call also 400s: the middle is dropped locally via
+  # OverflowFallbackSummary instead of dead-ending the session forever.
+  server.rejectSummarizer = true
+  var messages = bigHistory()
+  var session: Session
+  session.savePath = ""
+  session.readCache = newReadCache()
+  discard runTurnsInteractive(profile, messages, session)
+  let last = messages[^1]
+  doAssert last{"role"}.getStr == "assistant",
+    "B: last role " & last{"role"}.getStr
+  doAssert "RECOVERED_AFTER_SUMMARY" in last{"content"}.getStr,
+    "B: content " & last{"content"}.getStr
+  doAssert "dropped without a recap" in messages[1]{"content"}.getStr,
+    "B: no fallback recap: " & messages[1]{"content"}.getStr
+  echo "SCENARIO_B_OK"
+
+server.running = false
+server.sock.close()
+joinThread(serveThread)
+""")
+    # -d:testPlainHttp: the probe's provider is a loopback HTTP server.
+    # config.nims supplies it for in-repo builds, but the probe lives in a
+    # temp dir, so Nim never loads the repo's config from there.
+    let compileCmd = "nim c -d:ssl -d:testPlainHttp --threads:on --path:src " &
+      nimbleDepFlags() & " --nimcache:" & cacheDir.quoteShell &
+      " -o:" & outPath.quoteShell & " " & probePath.quoteShell
+    let (compileOut, compileCode) = execCmdEx(compileCmd)
+    check compileCode == 0
+    if compileCode != 0:
+      checkpoint compileOut
+    let (runOut, runCode) = execCmdEx(outPath.quoteShell, workingDir = probeDir,
+                                      options = {poStdErrToStdOut})
+    check runCode == 0
+    if runCode != 0:
+      checkpoint runOut
+    # Scenario A: recap via summarizer meta-call, retry succeeds.
+    check "SCENARIO_A_OK" in runOut
+    # Scenario B: summarizer itself rejected, local fallback recap.
+    check "SCENARIO_B_OK" in runOut
+    check "request rejected as too large" in runOut
+    check "collapsed 12 messages into a recap" in runOut
+    check "collapsed 12 messages without a recap" in runOut

@@ -683,6 +683,7 @@ proc runTurns*(p: Profile, messages: var JsonNode, session: var Session): bool =
     emptyRetries = 0               # bare empty-reply resends after smart-handling
     flailDet: FlailDetector        # identical-consecutive-tool-call guard
     nextCheckpoint = 0             # id of the marker on the next assistant message
+    summarizedOn400 = false       # opaque-400 recovery fired this turn (one-shot)
   # dmail is offered only when the active profile's tool schema includes
   # it (kimi family); the marker tagging below keys off the same flag.
   var dmailEnabled = false
@@ -722,6 +723,35 @@ proc runTurns*(p: Profile, messages: var JsonNode, session: var Session): bool =
         # deferred endTurn would erase that and reset the cursor to col 0.
         turnEnded = true
         return true
+      # Opaque 400 recovery (issue #48): a gateway can reject a request
+      # for being byte-large while the token count is still far under the
+      # context window, so the proactive summarize never fires and the
+      # same history would 400 again on every resend. Zen's reply is a bare
+      # `inference_failed` with no overflow wording, so there is nothing
+      # to classify; the only signal is 400 + a history big enough to
+      # shrink. Collapse it once and retry; a 400 that survives a fresh
+      # summarize is a real request defect, so the guard is one-shot per
+      # turn.
+      if e of HttpError and cast[ref HttpError](e).code == 400 and
+          not summarizedOn400 and messages.len >= SummarizeKeepRecent + 4:
+        summarizedOn400 = true
+        # Prefer a real recap; if the summarizer meta-call fails too (its
+        # payload is clipped to fit, but an even tighter envelope or a
+        # broken route kills it anyway), drop the middle locally rather
+        # than leave the session permanently dead.
+        let summarized = summarizeHistory(messages, wire)
+        let collapsed =
+          if summarized > 0: summarized
+          else: applySummary(messages, OverflowFallbackSummary)
+        if collapsed > 0:
+          saveSession(session, messages)
+          commitTranscriptBytes(
+            hintLnS("· request rejected as too large; collapsed " &
+              $collapsed & " message" &
+              (if collapsed == 1: "" else: "s") &
+              (if summarized > 0: " into a recap" else: " without a recap") &
+              ", retrying"), true)
+          continue
       # Transport retry budget exhausted (or another fatal callModel error).
       # `callModel` already stopped the spinner, but the deferred `endTurn`
       # below still owns the prompt repaint, and the outer catch path used
