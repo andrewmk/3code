@@ -209,6 +209,21 @@ when defined(windows):
                   addr got, nil) != 0 and got == 1:
         return ch.ord.cint
       return -1
+    # ENABLE_VIRTUAL_TERMINAL_INPUT is on (set by the fat prompt's input
+    # thread): ReadFile is the documented pairing for that flag and
+    # returns the key stream as raw VT sequences. `_getch` reads the
+    # console's key records instead, and on some consoles (live ConPTY on
+    # Windows 11) those records arrive as the legacy 224/0 pair encoding
+    # even with the flag set, silently stripping modifiers: Shift+Arrows
+    # decoded as plain arrows and selection never engaged.
+    var vm: int32 = 0
+    let vh = getStdHandle(STD_INPUT_HANDLE_ML)
+    if getConsoleMode(vh, addr vm) != 0 and (vm and 0x0200'i32) != 0:
+      var ch: char
+      var got: int32 = 0
+      if readFile(vh, addr ch, 1, addr got, nil) != 0 and got == 1:
+        return ch.ord.cint
+      return -1.cint
     rawGetch()
 else:
   proc putchr*(c: cint) {.header: "stdio.h", importc: "putchar"} =
@@ -2715,19 +2730,17 @@ proc hasPendingEscapeTail(ed: LineEditor): bool =
   ## POSIX terminals send a bare Escape with the same leading byte used
   ## by arrow-key CSI sequences. Wait briefly for a tail byte; if none
   ## arrives, treat it as a standalone cancel key.
-  when defined(windows):
-    # The fat prompt passes no `hasPendingInput` on Windows, and the
-    # fallback used to be `true` (a phantom tail) because
-    # `terminalHasPendingInput` had no Windows peek: ESC then fell
-    # through to a blocking `_getch` for a second byte that never comes,
-    # freezing the input thread until the next keystroke. The `_kbhit`
-    # Windows branch makes the fallback honest.
-    terminalHasPendingInput()
+  # An embedded editor (tests, harnesses) supplies its own pending-byte
+  # probe via `hasPendingInput`; the fat prompt on Windows passes none,
+  # and the fallback used to be `true` (a phantom tail) because
+  # `terminalHasPendingInput` had no Windows peek: ESC then fell
+  # through to a blocking `_getch` for a second byte that never comes,
+  # freezing the input thread until the next keystroke. The `_kbhit`
+  # Windows branch makes the fallback honest.
+  if ed.hasPendingInput != nil:
+    ed.hasPendingInput()
   else:
-    if ed.hasPendingInput != nil:
-      ed.hasPendingInput()
-    else:
-      terminalHasPendingInput()
+    terminalHasPendingInput()
 
 # ---------- readLine driver ----------
 

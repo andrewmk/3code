@@ -18,7 +18,10 @@ Changelog
   Windows enables ENABLE_VIRTUAL_TERMINAL_INPUT so the console speaks
   the same VT key grammar as every other platform (legacy conhost
   keeps the `_getch` pair codes); the modified-key CSI decoding and
-  selection rendering are shared verbatim.
+  selection rendering are shared verbatim. Keys are read via ReadFile
+  under VT input: `_getch` decodes the console's key records and on
+  live consoles still emits the legacy 224/0 pair encoding with the
+  flag set, silently stripping modifiers.
 
 - **Flail guard: streak signal no longer flags verification retries.**
   The stuck-streak signal read a long same-tool run of near-identical

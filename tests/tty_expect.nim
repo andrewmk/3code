@@ -728,6 +728,13 @@ proc newTtySession*(bin: string; args: openArray[string] = [];
       tickerAckFd: tickerAckRead,
       apiContinueFd: apiWrite)
 
+    # The ConPTY is created at cols x rows above, but the grid still has
+    # newGrid()'s default size; without this the model parses 120-col
+    # output on a narrower grid and every absolute move / long-row paint
+    # wraps to the wrong cells (selection attributes silently lost).
+    # The POSIX branch does the same via result.resize below.
+    discard result.resize(cols, rows)
+
     # Build the STARTUPINFOEX with a PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
     # attribute so CreateProcess attaches the child to this pseudoconsole.
     var attrSize: SIZE_T = 0

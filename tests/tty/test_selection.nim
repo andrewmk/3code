@@ -1,8 +1,9 @@
 discard """
-  disabled: "win"
-  ## posix-only: raw CSI modifier bytes (Shift+Arrow) are sent straight
-  ## through the PTY master; the Windows suite covers the pair-code path
-  ## in tests/core/test_windows_keys.nim.
+  ## Runs on Windows too: with ENABLE_VIRTUAL_TERMINAL_INPUT the editor
+  ## reads raw VT sequences (ReadFile) from the ConPTY, so the same CSI
+  ## modifier bytes drive selection there. Verified live on Windows 11;
+  ## the legacy pair-code path is covered in
+  ## tests/core/test_windows_keys.nim.
 """
 ## Keyboard selection end-to-end: Shift+Arrow extends a reverse-video
 ## selection in the real binary's prompt, Ctrl+X cuts it, and the cut

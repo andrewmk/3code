@@ -377,7 +377,23 @@ when defined(windows):
         sleep(StepMs.int)
       elapsedMs += StepMs
     if haveMode:
-      discard setConsoleMode(hIn, oldMode)
+      # Restore only the bits this proc cleared. The full-snapshot
+      # restore used to race the input thread's console setup: if that
+      # thread added ENABLE_VIRTUAL_TERMINAL_INPUT between our save and
+      # restore, restoring the stale snapshot silently dropped it and
+      # every key for the rest of the session arrived as legacy `_getch`
+      # pair codes (no modifiers, no VT sequences). Recompute from the
+      # LIVE mode so concurrently-added bits survive.
+      var live: int32 = 0
+      if getConsoleMode(hIn, addr live) != 0:
+        var want = live and not (ENABLE_LINE_INPUT or ENABLE_ECHO_INPUT)
+        if (oldMode and ENABLE_LINE_INPUT) != 0:
+          want = want or ENABLE_LINE_INPUT
+        if (oldMode and ENABLE_ECHO_INPUT) != 0:
+          want = want or ENABLE_ECHO_INPUT
+        discard setConsoleMode(hIn, want)
+      else:
+        discard setConsoleMode(hIn, oldMode)
     if total == 0: return cmDark
     var reply = newString(total)
     copyMem(reply[0].addr, buf[0].addr, total)
