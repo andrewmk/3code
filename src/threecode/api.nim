@@ -453,6 +453,13 @@ proc emptyReplyWait*(): bool =
 # cache so the next turn starts on a fresh socket.
 var cachedStreamConn: StreamConn
 var cachedStreamHostKey: string
+var lastRequestBodyBytes* = 0
+  ## Byte length of the body the most recent real (non-stub) `callModel`
+  ## serialized for the wire. Published for the turn loop's byte-envelope
+  ## guard: Zen-family gateways reject oversized request bodies with an
+  ## opaque 400 well before the token context limit, and only the actual
+  ## body size (tools + system + history, after provider-specific
+  ## wrapping) predicts that — token counts cannot.
 # Mirror of the cached conn's fd, kept current so the SIGINT hook and
 # the stdin watcher thread can `posix.shutdown` it without touching
 # the GC'd `StreamConn` ref. Set/cleared alongside `cachedStreamConn`.
@@ -494,9 +501,33 @@ proc closeCachedStreamConn*() =
     cachedStreamHostKey = ""
   cachedStreamFd = osInvalidSocket
 
+when defined(posix):
+  var MSG_DONTWAIT {.importc: "MSG_DONTWAIT", header: "<sys/socket.h>".}: cint
+
+proc cachedConnClosedByPeer(): bool =
+  ## Non-blocking peek at the cached fd: a 0-byte read at EOF means the
+  ## peer closed its side (every `Connection: close` reply). EAGAIN means
+  ## nothing pending and the conn is alive; any other error counts as
+  ## dead. Reusing a peer-closed conn wedged `send` in a tight retry that
+  ## never surfaced as an exception, so the stale-cache recovery in
+  ## callHttp/streamHttp never engaged.
+  when defined(posix):
+    let fd = cachedStreamFd
+    if fd == osInvalidSocket: return true
+    var buf: array[1, char]
+    let n = posix.recv(posix.SocketHandle(fd), addr buf[0], 1,
+                       (posix.MSG_PEEK or MSG_DONTWAIT).cint)
+    if n == 0: return true
+    if n > 0: return false
+    let err = errno
+    return not (err == EAGAIN.cint or err == EWOULDBLOCK.cint)
+  else:
+    false
+
 proc acquireStreamConn(host: string; port: Port; plainHttp: bool): StreamConn =
   let identity = (if plainHttp: "http://" else: "https://") & host & ":" & $port.uint16
-  if cachedStreamConn != nil and cachedStreamHostKey == identity:
+  if cachedStreamConn != nil and cachedStreamHostKey == identity and
+      not cachedConnClosedByPeer():
     return cachedStreamConn
   closeCachedStreamConn()
   try:
@@ -2951,6 +2982,10 @@ proc callModel*(p: Profile, messages: JsonNode, usage: var Usage,
           sanitizeUtf8(anthropicBody(p, body))
         else:
           sanitizeUtf8($body)
+  # Exact wire size of the request about to go out. The Zen byte-envelope
+  # guard in the turn loop keys off this; set before any send attempt so
+  # even a failed/retried call reports the size that was rejected.
+  lastRequestBodyBytes = bodyStr.len
   if "\"usage\"" in bodyStr:
     stderr.writeLine "3code: BUG: usage in wireMessages"
     for i, m in wireMessages:

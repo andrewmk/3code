@@ -307,6 +307,11 @@ proc callModelStub(p: Profile, messages: JsonNode, usage: var Usage,
       let category = retryCategory(errMsg, nil, code)
       if category.len == 0 or attempt >= StubMaxAttempts:
         hookStopSpinner()
+        # Mirror the real transport's raise: an HTTP-status failure is an
+        # HttpError carrying the code, so turn-level recovery can branch on
+        # it exactly like it would against a live provider.
+        if code > 0:
+          raise newHttpError(code, errMsg, stubErrBody(lastFailure, node))
         raise newException(ApiError,
           formatApiDetail(errMsg, stubErrBody(lastFailure, node), code))
       let retryAfter = try: parseInt(stubRetryAfter(node)) except CatchableError: 0

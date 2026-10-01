@@ -55,6 +55,46 @@ const
   SummarizeMaxTokens* = 500
   SummaryPrefix* = "Earlier in this session: "
   SummarizerSystemPrompt* = """You are summarizing an earlier coding session for later recall. Compress the messages below into one paragraph covering: files read/written, commands run and outcomes, current state (tests green? uncommitted changes? what decision was reached?). Omit everything that's been superseded. No filler."""
+  SummarizerPayloadCap = 768 * 1024
+    ## Gateways reject oversized request bodies with an opaque 400 while
+    ## the token count is still far under the context window (Zen does at
+    ## roughly a megabyte; issue #48). The summarizer meta-call must fit
+    ## that same envelope even when the conversation it summarizes does
+    ## not, so oversized message text is clipped to a per-message budget
+    ## derived from this cap.
+  SummarizeByteGuardBytes* = 1_000_000
+    ## Proactive request-size ceiling for the Zen-family gateways
+    ## (opencode/opencodego). Their byte envelope is undocumented and
+    ## route-variable — observed between roughly one and two MB
+    ## (anomalyco/opencode#35013, capocasa/3code#48) — so the guard sits
+    ## under the tightest observed envelope and fires while every known
+    ## route would still accept the request. Other providers are not
+    ## guarded: several accept multi-MB bodies and would get pointless
+    ## lossy summarization.
+  OverflowFallbackSummary* = "Earlier turns were dropped without a recap " &
+    "because the provider rejected the conversation as too large and the " &
+    "summarizer call failed as well; the recent messages below are " &
+    "everything that remains."
+
+proc clipSummarizerPayload(payload: JsonNode) =
+  ## Shrink `payload` in place until its serialized size fits
+  ## `SummarizerPayloadCap`, halving the per-message budget as needed.
+  ## Only message text is clipped; roles, ids and tool-call wrappers stay
+  ## intact so provider-side pairing validation still passes.
+  if payload == nil or payload.kind != JArray or payload.len == 0: return
+  var perMsg = max(256, SummarizerPayloadCap div payload.len)
+  while len($payload) > SummarizerPayloadCap:
+    for m in payload:
+      if m.kind != JObject: continue
+      for field in ["content", "reasoning_content"]:
+        let c = m{field}
+        if c != nil and c.kind == JString and c.getStr.len > perMsg:
+          let s = c.getStr
+          m[field] = %(utf8ByteCut(s, perMsg div 2) &
+            "\n... [clipped for size] ...\n" &
+            utf8ByteCutEnd(s, perMsg div 2))
+    if perMsg <= 256: break
+    perMsg = perMsg div 2
 
 proc applySummary*(messages: JsonNode, summary: string,
                   keepRecent = SummarizeKeepRecent): int =
@@ -136,6 +176,11 @@ proc callSummarizer(p: Profile, messages: JsonNode): string =
       if m.kind == JObject and m{"role"}.getStr == "assistant" and
          m.contains("reasoning_content"):
         m.delete("reasoning_content")
+  # Last, after the field hygiene above: clip oversized text so the
+  # meta-call itself fits the gateway's request envelope. Without this a
+  # byte-large history made BOTH the main call and this rescue call 400,
+  # which is why a stuck session could not even be summarized manually.
+  clipSummarizerPayload(payload)
   var body: JsonNode
   var endpoint: string
   if useResponses:
