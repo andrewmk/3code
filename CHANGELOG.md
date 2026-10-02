@@ -18,7 +18,10 @@ Changelog
   Windows enables ENABLE_VIRTUAL_TERMINAL_INPUT so the console speaks
   the same VT key grammar as every other platform (legacy conhost
   keeps the `_getch` pair codes); the modified-key CSI decoding and
-  selection rendering are shared verbatim.
+  selection rendering are shared verbatim. Keys are read via ReadFile
+  under VT input: `_getch` decodes the console's key records and on
+  live consoles still emits the legacy 224/0 pair encoding with the
+  flag set, silently stripping modifiers.
 
 - **Byte-envelope 400 recovery (issue #48).** Gateways reject oversized
   request bodies with an opaque 400 (`inference_failed` on OpenCode Zen)
