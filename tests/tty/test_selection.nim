@@ -80,8 +80,21 @@ suite "keyboard selection":
       sleep(80)
     check reverseCells(s.grid) >= 6
     # Ctrl+X cuts the selection; only "hello" remains at the prompt.
+    # A loaded CI runner can lag the cut's repaint well past any fixed
+    # sleep (the cut itself provably ran: selection active, ctrl+x
+    # dispatched), so poll for the settled screen instead.
     s.send("\x18")
-    sleep(250)
+    var cutSettled = false
+    for _ in 0 ..< 30:
+      s.drain(100)
+      var probe = ""
+      for r in 0 ..< s.grid.rows.len:
+        let t = s.grid.rowText(r)
+        if "hello" in t: probe = t
+      if "world" notin probe:
+        cutSettled = true
+        break
+    check cutSettled
     var cutRow = ""
     for r in 0 ..< s.grid.rows.len:
       let t = s.grid.rowText(r)
