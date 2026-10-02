@@ -283,6 +283,18 @@ when defined(windows):
         lastCtlDown = -1              # this up closes its down: already sent
         return @[]
       return @[ch.int]                # up without a down (conhost quirk)
+    if ch == 0 and down:
+      # Charless Ctrl+<letter>: some conhost builds deliver the control
+      # code only as the virtual key with Ctrl held (no UnicodeChar).
+      # Reconstruct it; `lastCtlDown` keeps a later char-carrying up
+      # from doubling the byte.
+      let vk = recordVk(rec)
+      let mods = recordModifiers(rec)
+      if vk >= 0x41 and vk <= 0x5A and
+          (mods and (leftCtrlPressed or rightCtrlPressed)) != 0 and
+          (mods and (leftAltPressed or rightAltPressed)) == 0:
+        lastCtlDown = vk - 0x41 + 1
+        return @[(vk - 0x41 + 1).int]
     if ch != 0: return @[]            # printable on a key-up: already sent
     navSeq(recordVk(rec), recordModifiers(rec))
 
