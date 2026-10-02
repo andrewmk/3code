@@ -185,18 +185,51 @@ type
     ## home and lets following chars overwrite the line in place instead of
     ## appending — stripping `\r` used to concatenate every meter snapshot
     ## into one unbounded mega-line that outgrew the viewport and flickered.
+    ## Tool output that is itself terminal frames (a nested TUI under a
+    ## pipe) also carries cursor controls, and the rows this accumulator
+    ## emits are painted into the fat prompt at computed positions: a
+    ## literal CUU/EL painted mid-row moved the real cursor and stacked
+    ## duplicated bars/prompts up the screen. Vertical moves therefore end
+    ## the line, EL clears it, CUB/CUF move within it, and everything else
+    ## that would move or query the terminal is dropped (SGR colors are
+    ## kept: they are inert when repainted). `pend` holds an escape split
+    ## across read chunks.
     phys: string
     col: int
+    pend: string
 
 proc feedLineChar(a: var LineAcc; ch: char) =
-  if ch == '\r':
+  if a.col > a.phys.len:
+    a.phys.add repeat(' ', a.col - a.phys.len)
+  if a.col < a.phys.len:
+    a.phys[a.col] = ch
+  else:
+    a.phys.add ch
+  inc a.col
+
+proc accFirstParam(params: string; default: int): int =
+  ## First numeric parameter of a CSI sequence (`""`/private-marked →
+  ## `default`), per ECMA-48: a 0 parameter means the default count.
+  var i = 0
+  var n = 0
+  var seen = false
+  while i < params.len and params[i] in {'0'..'9'}:
+    n = n * 10 + (ord(params[i]) - ord('0'))
+    seen = true
+    inc i
+  if not seen or n == 0: default else: n
+
+proc accEraseLine(a: var LineAcc; mode: int) =
+  case mode
+  of 1:
+    if a.phys.len > 0:
+      a.phys.delete(0, min(a.col, a.phys.len - 1))
+    a.col = 0
+  of 2:
+    a.phys.setLen(0)
     a.col = 0
   else:
-    if a.col < a.phys.len:
-      a.phys[a.col] = ch
-    else:
-      a.phys.add ch
-    inc a.col
+    a.phys.setLen(min(a.col, a.phys.len))
 
 proc emitCompleteLine(rawOut: var string; acc: var LineAcc;
                       onLine: proc(line: string);
@@ -210,18 +243,115 @@ proc emitCompleteLine(rawOut: var string; acc: var LineAcc;
   partialShown = false
   partialText.setLen(0)
 
+proc flushAccLine(rawOut: var string; acc: var LineAcc;
+                  onLine: proc(line: string);
+                  partialShown: var bool; partialText: var string;
+                  suppress: var bool) =
+  ## The logical cursor left this line (vertical move, screen clear): what
+  ## accumulated is a complete line. An empty accumulator needs no row.
+  if acc.phys.len > 0:
+    emitCompleteLine(rawOut, acc, onLine, partialShown, partialText, suppress)
+  else:
+    acc.col = 0
+
+proc feedEscape(rawOut: var string; acc: var LineAcc; buf: string; i: int;
+                onLine: proc(line: string);
+                partialShown: var bool; partialText: var string;
+                suppress: var bool): int =
+  ## Interpret one escape sequence starting at `buf[i] == '\x1b'` against
+  ## the single-line model. Returns bytes consumed, or 0 when the sequence
+  ## is split across chunks (caller stashes the tail in `pend`). A sequence
+  ## longer than 64 bytes without a final byte is malformed garbage: drop
+  ## just the ESC and let the rest read as text.
+  if i + 1 >= buf.len:
+    return 0
+  case buf[i + 1]
+  of '[':
+    var j = i + 2
+    while j < buf.len and
+        buf[j] in {'0'..'9', ';', ':', '?', '<', '=', '>', ' ', '!', '"',
+                   '\'', '$', '}'}:
+      inc j
+    if j >= buf.len:
+      return if buf.len - i > 64: 1 else: 0
+    let final = buf[j]
+    let params = buf[i + 2 ..< j]
+    case final
+    of 'm':
+      # Color is inert when the row is repainted; keep it on a growing
+      # line, drop it mid-overwrite (inserting bytes there would shift
+      # the overwrite column). `col` is a byte index into phys, so the
+      # appended bytes advance it or the next char overwrites them.
+      if acc.col >= acc.phys.len:
+        acc.phys.add buf[i ..< j + 1]
+        acc.col = acc.phys.len
+    of 'K':
+      accEraseLine(acc, accFirstParam(params, 0))
+    of 'C':
+      acc.col += accFirstParam(params, 1)
+    of 'D':
+      acc.col = max(0, acc.col - accFirstParam(params, 1))
+    of 'A', 'B', 'E', 'F', 'H', 'f', 'd', 'J', 'r':
+      # Vertical or absolute positioning: the current line ends here.
+      flushAccLine(rawOut, acc, onLine, partialShown, partialText, suppress)
+    else:
+      discard
+    result = j - i + 1
+  of ']':
+    # OSC (terminal queries, title): drop through BEL or ST.
+    let limit = min(buf.len, i + 512)
+    var j = i + 2
+    while j < limit:
+      if buf[j] == '\x07':
+        return j - i + 1
+      if buf[j] == '\x1b' and j + 1 < buf.len and buf[j + 1] == '\\':
+        return j - i + 2
+      inc j
+    if j >= buf.len:
+      return 0
+    result = 2
+  else:
+    # Two-byte escapes. RI (reverse index) is a vertical move; the rest
+    # (charset designation consumes one more byte) cannot affect a line.
+    if buf[i + 1] == 'M':
+      flushAccLine(rawOut, acc, onLine, partialShown, partialText, suppress)
+    if buf[i + 1] in {'(', ')', '*', '+'} and i + 2 < buf.len:
+      result = 3
+    else:
+      result = 2
+
 proc feedOutputChunk(rawOut: var string; acc: var LineAcc; chunk: string;
                      onLine: proc(line: string);
                      partialShown: var bool; partialText: var string;
                      suppress: var bool) =
-  for ch in chunk:
+  var buf = chunk
+  if acc.pend.len > 0:
+    buf = acc.pend & chunk
+    acc.pend.setLen(0)
+  var i = 0
+  while i < buf.len:
+    let ch = buf[i]
     if ch == '\x00':
       suppress = true
-      continue
-    if ch == '\n':
+    elif ch == '\n':
       emitCompleteLine(rawOut, acc, onLine, partialShown, partialText, suppress)
+    elif ch == '\r':
+      acc.col = 0
+    elif ch == '\b':
+      acc.col = max(0, acc.col - 1)
+    elif ch == '\x1b':
+      let used = feedEscape(rawOut, acc, buf, i, onLine, partialShown,
+                            partialText, suppress)
+      if used == 0:
+        acc.pend = buf[i ..< buf.len]
+        return
+      i += used
+      continue
+    elif ch < ' ' and ch != '\t':
+      discard
     else:
       feedLineChar(acc, ch)
+    inc i
 
 proc emitPartialLine(acc: LineAcc; onLine: proc(line: string);
                      partialShown: var bool; partialText: var string;
@@ -844,14 +974,8 @@ export DEBIAN_FRONTEND=noninteractive
       var partialText = ""
       var suppress = false
       while not outStream.atEnd:
-        let ch = outStream.readChar()
-        if ch == '\x00':
-          suppress = true
-          continue
-        if ch == '\n':
-          emitCompleteLine(rawOut, acc, onLine, partialShown, partialText, suppress)
-        else:
-          feedLineChar(acc, ch)
+        feedOutputChunk(rawOut, acc, $outStream.readChar(), onLine,
+                        partialShown, partialText, suppress)
       emitFinalPartial(rawOut, acc, onLine, partialShown, partialText, suppress)
   finally:
     cancelled = stopToolCancelWatcher()

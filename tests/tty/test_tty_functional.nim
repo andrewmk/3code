@@ -1715,6 +1715,98 @@ max-tokens = "8192"
     tty.expectOnScreen "❯"
     tty.expectAlive()
 
+  test "nested TUI tool output paints clean rows, no cursor-escape corruption":
+    if getEnv("THREECODE_TTY_ONLY").len > 0 and
+        getEnv("THREECODE_TTY_ONLY") != "nested_tui_output":
+      check true
+    else:
+      # Tool output that is itself terminal frames (a nested 3code retrying,
+      # any TUI run under a pipe) carries cursor controls: \r, CSI CUU/CUD,
+      # EL. The reader models a single physical line (\r restarts it), but
+      # vertical moves and erases used to pass through as literal bytes; the
+      # viewport then painted them inside its own rows, so the real cursor
+      # jumped mid-row on every repaint. Symptom: rows overlapping, the row
+      # under the omitted-lines marker appearing and disappearing, the whole
+      # block below shifting up and down, and the drawn caret flashing up
+      # near the $/€/£/¥ banner while the collapsed tail slid. The reader
+      # must interpret vertical moves as line boundaries and EL as a line
+      # clear, so each nested frame becomes clean stacked rows.
+      let root = newFixture("nested_tui_output")
+      writeConfiguredProvider(root)
+      writeStubResponses(root, %*[
+        {
+          "role": "assistant",
+          "content": "Running probe.",
+          "contentChunks": ["Running probe."],
+          "tool_calls": [
+            toolCall("call_nested", "bash", %*{
+              "command": "i=1; while [ $i -le 12 ]; do " &
+                "printf '  ⧗ ○0%% 0:%02d' \"$i\"; " &
+                "printf '\\r\\033[1A\\033[2K  only https supported, got: http, retry 7/64 in 0:%02d' \"$i\"; " &
+                "printf '\n'; i=$((i+1)); sleep 0.15; done"
+            })
+          ],
+          "usage": {"promptTokens": 10, "completionTokens": 5,
+                    "totalTokens": 15, "cachedTokens": 0}
+        },
+        {
+          "role": "assistant",
+          "content": "Done.",
+          "contentChunks": ["Done."],
+          "usage": {"promptTokens": 10, "completionTokens": 5,
+                    "totalTokens": 15, "cachedTokens": 0}
+        }
+      ])
+      let tty = startStub(root)
+      defer:
+        tty.writeFrameArtifact(root / "frames.txt")
+        tty.close()
+      tty.expect "❯"
+      tty.send "run the probe"
+      tty.send "\n"
+      tty.expectInHistory "$ "
+      tty.drain(700)
+      # Mid-run: every frame holds the nested rows as separate clean lines.
+      # A literal CUU/EL painted inside a row makes the physical cursor jump,
+      # merging the meter row and the notice row (or shifting the block so
+      # rows land on each other) in the recorded grid frames.
+      for i, frame in tty.frames:
+        for row in frame.rows:
+          if "printf" in row: continue  # the echoed command mentions both markers
+          doAssert(not ("⧗" in row and "only https" in row),
+            "REGRESSION (nested-tui): frame " & $i & " merges nested rows " &
+            "onto one screen row (cursor escapes painted literally): " & row)
+      # The volatile footer must exist exactly once: the corruption stacked
+      # a duplicated bar+prompt row per poisoned repaint (the live prompt row
+      # plus the committed `❯ run the probe` echo above it makes two).
+      var promptRows = 0
+      var barRows = 0
+      for row in tty.screenText().splitLines():
+        if "❯" in row: inc promptRows
+        if "↑10" in row: inc barRows
+      doAssert promptRows == 2,
+        "REGRESSION (nested-tui): " & $promptRows &
+        " prompt rows on screen (duplicated footer chrome):\n" &
+        tty.screenText()
+      doAssert barRows == 1,
+        "REGRESSION (nested-tui): " & $barRows &
+        " token-bar rows on screen (duplicated footer chrome):\n" &
+        tty.screenText()
+      tty.drain(2500)
+      # The sanitized stream: each nested frame became exactly two rows, so
+      # the last pair survives verbatim in the committed collapsed block.
+      tty.expectInHistory "⧗ ○0% 0:12"
+      tty.expectInHistory "only https supported, got: http, retry 7/64 in 0:12"
+      for i, frame in tty.frames:
+        for row in frame.rows:
+          if "printf" in row: continue
+          doAssert(not ("⧗" in row and "only https" in row),
+            "REGRESSION (nested-tui): committed frame " & $i &
+            " merges nested rows: " & row)
+      tty.expectInHistory "Done."
+      tty.expectOnScreen "❯"
+      tty.expectAlive()
+
   test "ctrl-c during bash tool then prompt accepts input":
     let root = newFixture("ctrlc_during_bash")
     writeConfiguredProvider(root)
