@@ -108,6 +108,99 @@ proc nextCommandSymbol*(): string =
   const symbols = ["$", "€", "£", "¥"]
   symbols[commandSymbolIndex.load(moAcquire) mod symbols.len]
 
+proc testFrameMode(): bool
+  ## Forward declaration: the rolling-rate procs below (and `getFrameModel`)
+  ## consult deterministic harness mode before it is defined further down.
+
+# --- Rolling token-rate tracker -------------------------------------------
+#
+# Backs the live spinner bar's tokens/sec readout. `slurped` (the cumulative
+# output-char count the SSE loop accumulates) is converted to the same rough
+# token estimate the bar's `↓` slot uses (`slurped div 4`) and stamped with a
+# wall-clock time on every progress delta. The readout is a rolling average
+# over the last ~3 seconds: for a young request (< 3s) it degrades to the
+# average rate since the request started, and across a stall it decays toward
+# zero as the window slides past the last burst. The value is refreshed at
+# paint time (getFrameModel), not frozen at the last chunk's value, so it
+# tracks the 80ms gui cadence and the input thread's keystroke repaints.
+#
+# Thread safety: fed by the controller (apiProgress) and read by the GUI +
+# input threads (getFrameModel) on the hot path, so it carries its own lock.
+# The deque is bounded by time eviction, not length.
+const TokenRateWindowS = 3.0
+  ## Lookback window (seconds) the rolling rate is averaged over.
+
+type TokenRateSample = object
+  ts*: float
+  tokens*: int
+
+var tokenRateLock: Lock
+var tokenRateSamples: seq[TokenRateSample]
+tokenRateLock.initLock()
+
+proc noteTokenSample(tokens: int) =
+  ## Record a cumulative token estimate with a timestamp. Called on every
+  ## progress delta (reasoning, content, tool args). Evicts samples older
+  ## than the window (plus a little slack for the reference lookup) so the
+  ## deque stays small. No-op in deterministic harness mode.
+  if testFrameMode(): return
+  let now = epochTime()
+  acquire tokenRateLock
+  try:
+    tokenRateSamples.add TokenRateSample(ts: now, tokens: tokens)
+    let cutoff = now - TokenRateWindowS - 1.0
+    while tokenRateSamples.len > 0 and tokenRateSamples[0].ts < cutoff:
+      tokenRateSamples.delete(0)
+  finally:
+    release tokenRateLock
+
+proc rollingTokenRate(): int =
+  ## Rolling tokens/sec over the last `TokenRateWindowS`. Returns 0 when
+  ## there isn't enough data to be meaningful (request just started, the
+  ## stream has stalled, or we are in deterministic harness mode). Not marked
+  ## gcsafe because it reads the GC-allocated sample deque; it is only called
+  ## from `getFrameModel`'s `.cast(gcsafe)` block, which permits it.
+  if testFrameMode(): return 0
+  let now = epochTime()
+  acquire tokenRateLock
+  try:
+    if tokenRateSamples.len < 2: return 0
+    let last = tokenRateSamples[^1]
+    # Reference sample: the newest one at or before (now - window); for a
+    # young request that is the first sample, so the rate degrades to the
+    # average since the request started.
+    let target = now - TokenRateWindowS
+    var refIdx = 0
+    for i in 0 ..< tokenRateSamples.len:
+      if tokenRateSamples[i].ts <= target: refIdx = i
+      else: break
+    let refS = tokenRateSamples[refIdx]
+    let dt = now - refS.ts
+    if dt < 0.5: return 0
+    let delta = last.tokens - refS.tokens
+    if delta <= 0: return 0
+    result = int(delta.float / dt + 0.5)
+    if result < 0: result = 0
+  finally:
+    release tokenRateLock
+
+proc resetTokenRateTracker() =
+  ## Clear the window at the start of each request so a new turn's rate is
+  ## not contaminated by the previous turn's tail.
+  acquire tokenRateLock
+  try:
+    setLen(tokenRateSamples, 0)
+  finally:
+    release tokenRateLock
+
+func tokenRateSlot(rate: int): string =
+  ## Bar slot for the rolling throughput: "⚡123t/s" (icon hugs the value,
+  ## matching the token slots). "" when there is nothing to show. Deliberately
+  ## ends in "t/s" so `hasElapsedSuffix` (which keys on a trailing bare clock
+  ## token) never mistakes it for an embedded turn timer.
+  if rate <= 0: ""
+  else: "⚡" & humanTokens(rate) & "t/s"
+
 # --- Single GUI animation thread: the sole background painter of
 #     `renderFooter`. Replaces the two-thread `spinnerLoop` (80ms) /
 #     `barTickLoop` (250ms) design that both repainted the footer region
@@ -385,6 +478,18 @@ proc getFrameModel*(): FrameModel {.gcsafe.} =
           freshString(frameModelShared.viewport.lines[i])
     finally:
       release frameModelLock
+    # Append the live tokens/sec readout to a spinner label so it refreshes
+    # at the paint cadence (80ms gui tick and input-thread keystroke
+    # repaints) instead of freezing at the last chunk's value, and so it
+    # decays toward zero across a stream stall. Only the spinner phase
+    # (model generating) shows a rate; the bar-tick and idle phases do not.
+    # Deterministic harness mode is skipped to keep golden frames stable.
+    if result.mode == amSpinner and not testFrameMode():
+      let slot = tokenRateSlot(rollingTokenRate())
+      if slot.len > 0:
+        result.label =
+          if result.label.len > 0: result.label & "  " & slot
+          else: slot
 
 func liveSpinnerGlyph*(m: FrameModel; rotating: string): string =
   ## The bar's activity glyph. Braille rotation means an in-flight API
@@ -1794,6 +1899,9 @@ proc apiBeforeCall*(lastPromptTokens, window: int): string =
   result = baseLabel
   apiLiveStream = initLiveMarkdownStream(baseLabel)
   contentStreamedLive = false
+  # Fresh rolling-rate window per request: the previous turn's tail (and its
+  # timestamp) must not bleed into this turn's `⚡t/s` readout.
+  resetTokenRateTracker()
   # A turn can end without `finishContent` clearing the volatile live-content
   # rows (interrupt before any content, a thrown error). Reset the engine's
   # tracker so a leftover from the previous turn can't corrupt this turn's
@@ -1823,6 +1931,11 @@ proc apiSetStatusLabel*(label: string) =
   setSpinLabel(label)
 
 proc apiProgress*(baseLabel: string; slurped: int) =
+  # Stamp the rolling token-rate window on every progress delta (reasoning,
+  # content, and tool args all fire progress) so the bar's `⚡t/s` readout
+  # reflects live throughput. `slurped div 4` is the same rough token
+  # estimate the `↓` slot shows, keeping the two consistent.
+  noteTokenSample(slurped div 4)
   setSpinLabel(liveLabel(baseLabel, slurped))
 
 proc apiProviderActivity*() =
