@@ -2,6 +2,20 @@ Changelog
 
 **Unreleased**
 
+- **Windows: console keys are read as records and translated to the VT
+  grammar in-process.** `ReadFile` under `ENABLE_VIRTUAL_TERMINAL_INPUT`
+  wedges forever when the record-queue head is a charless event (a
+  key-up): later keys pile up behind it and never wake the read, and the
+  bytes it has already translated sit in a kernel-side buffer invisible
+  to every readiness probe - Ctrl-C went dead mid-turn and the prompt
+  could not be quit. The editor now consumes `INPUT_RECORD`s with
+  `ReadConsoleInputW` (which handles every event type) and emits the
+  same CSI/Alt-chord grammar itself; the ESC-tail probe and the startup
+  drain work on the same byte view, and the drain only drops structural
+  bytes inside a sequence that began with ESC (it used to eat typed
+  hex letters `a`-`f` that landed in its window). Selection and
+  modifier keys still arrive as full VT sequences.
+
 - **Keyboard text selection and standard edit ops in the prompt (#44).**
   The input buffer is now a real text widget: Shift+Arrows / Shift+Home
   / Shift+End extend a reverse-video selection (Ctrl+Shift+Arrows by

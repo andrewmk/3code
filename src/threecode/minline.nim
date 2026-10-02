@@ -166,6 +166,184 @@ when defined(windows):
   proc peekConsoleInputW(hConsoleInput: Handle; lpBuffer: pointer;
       nLength: int32; lpNumberOfEventsRead: ptr int32): int32 {.stdcall,
       dynlib: "kernel32", importc: "PeekConsoleInputW".}
+  proc readConsoleInputW(hConsoleInput: Handle; lpBuffer: pointer;
+      nLength: int32; lpNumberOfEventsRead: ptr int32): int32 {.stdcall,
+      dynlib: "kernel32", importc: "ReadConsoleInputW".}
+  proc waitForSingleObject(h: Handle; dwMilliseconds: int32): int32 {.
+      stdcall, dynlib: "kernel32", importc: "WaitForSingleObject".}
+
+  const
+    vtInputFlag = 0x0200'i32
+      ## ENABLE_VIRTUAL_TERMINAL_INPUT
+    keyEventRecord = 1'i32
+      ## INPUT_RECORD EventType for KEY_EVENT_RECORD. KEY_EVENT_RECORD
+      ## field offsets inside INPUT_RECORD (EventType@0, pad@2, union@4):
+      ## bKeyDown@4, wRepeatCount@8, wVirtualKeyCode@10, UnicodeChar@14,
+      ## dwControlKeyState@16. Same layout the color probe in util.nim
+      ## parses; verified against 64-bit ABI padding.
+    shiftPressed = 0x0010'i32
+    leftAltPressed = 0x0002'i32
+    rightAltPressed = 0x0001'i32
+    leftCtrlPressed = 0x0008'i32
+    rightCtrlPressed = 0x0004'i32
+    vkHome = 0x24'i32
+    vkEnd = 0x23'i32
+    vkPrior = 0x21'i32
+    vkNext = 0x22'i32
+    vkLeft = 0x25'i32
+    vkUp = 0x26'i32
+    vkRight = 0x27'i32
+    vkDown = 0x28'i32
+    vkInsert = 0x2D'i32
+    vkDelete = 0x2E'i32
+    vkEscape = 0x1B'i32
+
+  type ConsoleRecord = array[32, uint8]
+    ## One INPUT_RECORD, size-padded for direct field access.
+
+  proc recordKeyDown(rec: ptr ConsoleRecord): bool =
+    (int32(rec[4]) or (int32(rec[5]) shl 8) or (int32(rec[6]) shl 16) or
+        (int32(rec[7]) shl 24)) != 0
+
+  proc recordVk(rec: ptr ConsoleRecord): int32 =
+    int32(rec[10]) or (int32(rec[11]) shl 8)
+
+  proc recordChar(rec: ptr ConsoleRecord): int32 =
+    int32(rec[14]) or (int32(rec[15]) shl 8)
+
+  proc recordModifiers(rec: ptr ConsoleRecord): int32 =
+    int32(rec[16]) or (int32(rec[17]) shl 8) or (int32(rec[18]) shl 16) or
+        (int32(rec[19]) shl 24)
+
+  proc navSeq(vk: int32; mods: int32): seq[int] =
+    ## CSI translation for a charless navigation key, matching the
+    ## KEYSEQS grammar: `CSI 1;<mod><dir>` / `CSI <n>;<mod>~`, with the
+    ## `;1` omitted when no modifier is held.
+    let m = 1 +
+        (if (mods and shiftPressed) != 0: 1 else: 0) +
+        (if (mods and (leftAltPressed or rightAltPressed)) != 0: 2 else: 0) +
+        (if (mods and (leftCtrlPressed or rightCtrlPressed)) != 0: 4 else: 0)
+    if vk == vkEscape: return @[27]
+    var body: string
+    case vk
+    of vkUp: body = "A"
+    of vkDown: body = "B"
+    of vkRight: body = "C"
+    of vkLeft: body = "D"
+    of vkHome: body = "H"
+    of vkEnd: body = "F"
+    of vkInsert: body = "2~"
+    of vkDelete: body = "3~"
+    of vkPrior: body = "5~"
+    of vkNext: body = "6~"
+    else: return @[]
+    if m > 1:
+      if body.len == 1:
+        body = "1;" & $m & body      # CSI 1;<mod><letter>
+      else:
+        body = body[0 ..< ^1] & ';' & $m & body[^1 .. ^1]  # CSI n;<mod>~
+    result = @[27, '['.ord]
+    for ch in body: result.add ch.ord
+
+  var lastCtlDown: int32 = -1
+    ## Char of the most recent control-char key-DOWN whose key-UP has
+    ## not been seen yet. conhost under VT input delivers control chars
+    ## in three shapes - paired down+up (Enter), down-only (a CSI's ESC
+    ## passed through as char records), up-only (Ctrl-C, whose down is
+    ## consumed by conhost's ctrl-C handling) - so a byte is emitted on
+    ## the DOWN, and on an UP only when no matching DOWN preceded it.
+
+  proc recordVtBytes(rec: ptr ConsoleRecord): seq[int] =
+    ## One KEY_EVENT record translated to the VT byte grammar the
+    ## editor decodes. Printables ride their key-DOWN; control chars
+    ## follow `lastCtlDown`'s pairing rule; charless navigation keys
+    ## become CSI sequences with modifier params. Key-ups of
+    ## printables, modifier-only presses and non-key events carry no
+    ## bytes.
+    if int32(uint16(rec[0])) != keyEventRecord: return @[]
+    let ch = recordChar(rec)
+    let down = recordKeyDown(rec)
+    if ch != 0 and ch >= 32:
+      if not down: return @[]
+      let mods = recordModifiers(rec)
+      if (mods and (leftAltPressed or rightAltPressed)) != 0:
+        return @[27, ch.int]
+      if ch > 0x7F:
+        # Console chars are UTF-16; the editor decodes UTF-8.
+        result = @[]
+        for b in toUTF8(cast[Rune](ch)):
+          result.add b.ord
+        return result
+      return @[ch.int]
+    if ch != 0 and ch < 32:
+      if down:
+        lastCtlDown = ch
+        return @[ch.int]
+      if ch == lastCtlDown:
+        lastCtlDown = -1              # this up closes its down: already sent
+        return @[]
+      return @[ch.int]                # up without a down (conhost quirk)
+    if ch != 0: return @[]            # printable on a key-up: already sent
+    navSeq(recordVk(rec), recordModifiers(rec))
+
+  var vtPending: Deque[int]
+    ## Translated console bytes not yet returned by `getchr`. Owned by
+    ## whichever thread drives the editor (the fat prompt's input thread
+    ## in the app); records are consumed in batches and the bytes handed
+    ## out one at a time, mirroring a POSIX read stream.
+
+  proc consoleVtInputOn(): bool =
+    var mode: int32 = 0
+    getConsoleMode(getStdHandle(STD_INPUT_HANDLE_ML), addr mode) != 0 and
+        (mode and vtInputFlag) != 0
+
+  proc consoleVtByteReady*(): bool =
+    ## Honest "would `getchr` return a byte right now" probe for the
+    ## VT-input console path: pending translated bytes, or a queued
+    ## key-down record that carries bytes. Charless records (key-ups,
+    ## modifier presses, focus/mouse events) do not count - `ReadFile`
+    ## under VT input wedges on exactly those as queue head, which is
+    ## why this reader never lets `ReadFile` see the queue at all.
+    ## Records are peeked one at a time: INPUT_RECORD is 20 bytes, so a
+    ## batched buffer needs the exact ABI stride to stay aligned.
+    if vtPending.len > 0: return true
+    var pending: int32 = 0
+    let h = getStdHandle(STD_INPUT_HANDLE_ML)
+    if h == 0 or getNumberOfConsoleInputEvents(h, addr pending) == 0 or
+        pending <= 0:
+      return false
+    for r in 0 ..< min(pending, 16):
+      var rec: ConsoleRecord
+      var got: int32 = 0
+      if peekConsoleInputW(h, addr rec[0], 1, addr got) == 0 or got == 0:
+        return false
+      if recordVtBytes(addr rec).len > 0: return true
+      discard readConsoleInputW(h, addr rec[0], 1, addr got)
+    false
+
+  proc consoleFillVt(timeoutMs: int32): bool =
+    ## Wait up to `timeoutMs` for console records (-1 = forever), consume
+    ## pending records with `ReadConsoleInputW` and translate them into
+    ## `vtPending`. True when at least one byte became available. Records
+    ## are consumed one per call: a batched read would need the exact
+    ## INPUT_RECORD ABI stride to stay aligned.
+    while vtPending.len == 0:
+      let h = getStdHandle(STD_INPUT_HANDLE_ML)
+      if h == 0: return false
+      discard waitForSingleObject(h, timeoutMs)
+      while vtPending.len == 0:
+        var queued: int32 = 0
+        if getNumberOfConsoleInputEvents(h, addr queued) == 0 or queued <= 0:
+          break  # ReadConsoleInputW blocks on an empty buffer
+        var rec: ConsoleRecord
+        var got: int32 = 0
+        if readConsoleInputW(h, addr rec[0], 1, addr got) == 0 or got == 0:
+          break
+        for b in recordVtBytes(addr rec):
+          vtPending.addLast b
+      if vtPending.len > 0: return true
+      if timeoutMs >= 0: return false
+    true
 
   var stdinKindChecked = false
   var stdinIsConsole = true
@@ -210,20 +388,19 @@ when defined(windows):
         return ch.ord.cint
       return -1
     # ENABLE_VIRTUAL_TERMINAL_INPUT is on (set by the fat prompt's input
-    # thread): ReadFile is the documented pairing for that flag and
-    # returns the key stream as raw VT sequences. `_getch` reads the
-    # console's key records instead, and on some consoles (live ConPTY on
-    # Windows 11) those records arrive as the legacy 224/0 pair encoding
-    # even with the flag set, silently stripping modifiers: Shift+Arrows
-    # decoded as plain arrows and selection never engaged.
-    var vm: int32 = 0
-    let vh = getStdHandle(STD_INPUT_HANDLE_ML)
-    if getConsoleMode(vh, addr vm) != 0 and (vm and 0x0200'i32) != 0:
-      var ch: char
-      var got: int32 = 0
-      if readFile(vh, addr ch, 1, addr got, nil) != 0 and got == 1:
-        return ch.ord.cint
-      return -1.cint
+    # thread): read the console's key records with `ReadConsoleInputW`
+    # and translate them to the VT grammar in-process. `ReadFile` would
+    # translate too (and `_getch` strips modifiers on some consoles), but
+    # a `ReadFile` under VT input called while the record-queue head is
+    # charless (a key-up) wedges forever - later keys pile up behind it
+    # and never wake it - and any bytes it has already translated sit in
+    # a kernel-side buffer invisible to every readiness probe. Owning
+    # the record-to-byte step makes reads and probes agree and can never
+    # wedge: `ReadConsoleInputW` consumes records of every type.
+    if stdinConsole() and consoleVtInputOn():
+      if vtPending.len == 0 and not consoleFillVt(-1):
+        return -1.cint
+      return vtPending.popFirst().cint
     rawGetch()
 else:
   proc putchr*(c: cint) {.header: "stdio.h", importc: "putchar"} =
@@ -2652,33 +2829,25 @@ template noteReplyCaptured*(reply: string) =
     replyCaptureHook(reply)
 
 when defined(windows):
-  proc consoleHasTailKeyPress(): bool =
-    ## True when the console queue holds a key *press* whose char is a
-    ## valid escape tail. `kbhit()` only reports "some event is queued":
-    ## the key-UP record that trails every `_getch`-consumed press stays
-    ## in the queue, so whether a bare ESC saw a "pending tail" raced on
-    ## the UP's arrival timing and a lost cancel. Peeking the records
-    ## (no consumption - `_getch` still owns the queue) is deterministic.
+  proc legacyConsoleTailKeyPress(): bool =
+    ## Legacy `_getch` console (VT input off): true when the queue holds
+    ## a key press whose char is a valid escape tail. `_getch` consumes
+    ## the record queue itself, so records are the right view there.
+    ## Peeks one record per call (INPUT_RECORD is 20 bytes; a batched
+    ## buffer would need the exact ABI stride to stay aligned).
     var pending: int32 = 0
     let h = getStdHandle(STD_INPUT_HANDLE_ML)
     if h == 0 or getNumberOfConsoleInputEvents(h, addr pending) == 0 or
         pending <= 0:
       return false
-    var recs: array[16, array[32, uint8]]  # INPUT_RECORDs, size-padded
-    var got: int32 = 0
-    if peekConsoleInputW(h, addr recs[0][0], min(pending, 16'i32),
-                         addr got) == 0:
-      return false
-    for r in 0 ..< got.int:
-      let rec = addr recs[r]
-      # INPUT_RECORD: WORD EventType; KEY_EVENT_RECORD union at offset 4:
-      # bKeyDown@4, UnicodeChar@14.
-      let evType = uint16(rec[0]) or (uint16(rec[1]) shl 8)
-      if evType != 1: continue            # KEY_EVENT only
-      let keyDown = int32(rec[4]) or (int32(rec[5]) shl 8) or
-          (int32(rec[6]) shl 16) or (int32(rec[7]) shl 24)
-      if keyDown == 0: continue           # release: never a tail
-      let ch = int(rec[14])
+    for r in 0 ..< min(pending, 16):
+      var rec: ConsoleRecord
+      var got: int32 = 0
+      if peekConsoleInputW(h, addr rec[0], 1, addr got) == 0 or got == 0:
+        return false
+      if int32(uint16(rec[0])) != keyEventRecord: continue
+      if not recordKeyDown(addr rec): continue
+      let ch = recordChar(addr rec)
       return ch != 0 and isEscapeTailByte(ch)
     false
 
@@ -2690,18 +2859,27 @@ proc terminalHasPendingInput*(): bool =
   ## tail so `handleEscape` cancels; any byte that arrives — including
   ## printable Alt-chord letters — is stashed and reported as a tail.
   when defined(windows):
-    # Poll for the same burst window the POSIX branch gives poll(). A
-    # bare ESC (no second byte in time) reports no tail. `_kbhit` only
-    # works on a console; on a pipe PeekNamedPipe is the readiness probe.
+    # Same contract as the POSIX branch below, through the record-based
+    # VT reader: wait one burst window for a translatable byte; a bare
+    # ESC (no second byte in time) reports no tail. Bytes already
+    # translated sit in `vtPending`, so the peek is exact for split CSI
+    # sequences; on a pipe PeekNamedPipe is the readiness probe. The
+    # legacy `_getch` console (no VT input flag) keeps the old record
+    # peek: `_getch` consumes the queue itself, so records are its view.
     if termPeeked >= 0:
       return true
+    if not stdinConsole():
+      return pipeByteReady()
+    if consoleVtInputOn():
+      if consoleFillVt(EscapeTailPollMs.cint):
+        return vtPending.len > 0 and isEscapeTailByte(vtPending[0])
+      return false
     let deadline = epochTime() + EscapeTailPollMs.float / 1000.0
     while epochTime() < deadline:
-      if (if stdinConsole(): consoleHasTailKeyPress() else:
-          pipeByteReady()):
+      if legacyConsoleTailKeyPress():
         return true
       sleep 1
-    return if stdinConsole(): consoleHasTailKeyPress() else: pipeByteReady()
+    return legacyConsoleTailKeyPress()
 
   when defined(posix):
     if isatty(0.cint) != 0:

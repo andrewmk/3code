@@ -2140,15 +2140,20 @@ proc inputThreadProc() {.thread.} =
           # still gets history recall once the prompt is live.
           if not startupDrainDone:
             let drainDeadline = epochTime() + 0.5
+            var inSeq = false
             while epochTime() < drainDeadline:
               if pendingInput.len == 0:
                 discard fillPending(25.cint)
               if pendingInput.len == 0: break
               if pendingInput[0] == 27:
-                # Drop ESC; structural tail bytes are consumed below.
+                # Drop ESC; structural tail bytes are consumed below,
+                # but only inside a sequence: the charset is hex-heavy
+                # (OSC 11 `rgb:` replies), so an ungated drop eats a
+                # typed `f` that opens the drain window.
                 pendingInput.delete(0)
+                inSeq = true
                 continue
-              if structuralTailByte(pendingInput[0]):
+              if inSeq and structuralTailByte(pendingInput[0]):
                 pendingInput.delete(0)
                 continue
               break
@@ -2202,10 +2207,20 @@ proc inputThreadProc() {.thread.} =
           # drained; a real typed byte ends the drain and is kept. Under
           # VT input there are no pairs: an ESC-prefixed sequence drains
           # through the same structural-tail charset the posix drain
-          # uses, so `ESC [ 1 ; 2 D` never leaks a ghost `[1;2D`.
+          # uses, so `ESC [ 1 ; 2 D` never leaks a ghost `[1;2D`. The
+          # charset is hex-heavy (OSC 11 `rgb:` replies), so structural
+          # bytes are only dropped *inside* a sequence that began with
+          # ESC: a typed `f` opening the window is real typing, not a
+          # tail, and must survive. `consoleVtByteReady`, not
+          # `_kbhit`: the VT reader owns the queue, and `_kbhit` counts
+          # charless records (key-ups) that never become bytes, which
+          # would park the drain in a blocking read.
           if not startupDrainDone:
             let drainDeadline = epochTime() + 0.5
-            while epochTime() < drainDeadline and conioKbhit() != 0:
+            var inSeq = false
+            while epochTime() < drainDeadline and
+                (if vtInputEnabled: minline.consoleVtByteReady()
+                 else: conioKbhit() != 0):
               let first = getchr().int
               if first in minline.ESCAPES:
                 if not vtInputEnabled:
@@ -2217,9 +2232,13 @@ proc inputThreadProc() {.thread.} =
                     sleep(1)
                   if conioKbhit() != 0:
                     discard getchr()
+                else:
+                  inSeq = true
                 continue
-              if vtInputEnabled and structuralTailByte(first):
-                continue
+              if vtInputEnabled:
+                if inSeq and structuralTailByte(first):
+                  continue
+                inSeq = false
               drainedChar = first
               break
             startupDrainDone = true
