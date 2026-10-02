@@ -1671,20 +1671,17 @@ proc handleCommandResult*(cmd: string, messages: var JsonNode,
     of ":session":
       resp sessionIdFromPath(session.savePath)
     of ":sessions":
-      # Listing is directory-scoped by design; the full set lives under
-      # `sessionDir()`. `showCwd` is threaded through as false to keep
-      # the re-enable path a one-line flip here and in the `-l` handler.
-      let showCwd = false
+      # Directory-scoped by default, like `-l`; `:sessions all` widens to
+      # every directory and shows each session's cwd, like `-la`.
       let askedAll = arg.strip.toLowerAscii in ["all", "-a", "--all"]
-      let paths = listSessionPathsForCwd(safeCwd())
+      let paths =
+        if askedAll: listSessionPaths()
+        else: listSessionPathsForCwd(safeCwd())
       if paths.len == 0:
-        resp "no saved sessions for this directory"
+        resp(if askedAll: "no saved sessions"
+             else: "no saved sessions for this directory")
       else:
-        body.add printSessionListS(paths, session.savePath, showCwd)
-      if askedAll:
-        let dir = collapseHome(sessionDir())
-        resp "listing is scoped to this directory — run from " & dir &
-                    " for all"
+        body.add printSessionListS(paths, session.savePath, askedAll)
     of ":summarize":
       if prof.name == "":
         ok = false

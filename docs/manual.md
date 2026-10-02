@@ -896,8 +896,9 @@ Resume a session by ID:
 3code -r:abc123
 ```
 
-Sessions are listed per working directory, so unrelated projects stay out of
-each other's history. Provider prompt caches may expire before a saved session
+Sessions are listed and searched per working directory by default, so
+unrelated projects stay out of each other's history; `-a` opts out of the
+scoping for both. Provider prompt caches may expire before a saved session
 does. The session will still resume, but its old context may no longer get the
 cache discount.
 

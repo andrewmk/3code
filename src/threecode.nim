@@ -33,7 +33,7 @@ import threecode/[types, util, prompts, shell, session, compact,
                   config, actions, api, display, ui, update, fatprompt,
                   toolstream, turns, transcript, sandbox, box, wall,
                   auth_xai, auth_openai, auth_google, auth_anthropic,
-                  streamexec, cli]
+                  streamexec, cli, search]
 when not defined(android):
   import tinotify
 else:
@@ -87,7 +87,10 @@ proc usage() {.noreturn.} =
   -i, --interactive    drop into the REPL after running an initial prompt
                       (without it, a prompt runs once and exits)
   -l, --list           list recent sessions for this directory (max 20) and exit
-  -a, --all            (reserved) with -l, accepted but a no-op for now
+  -a, --all            with -l / -f: every directory, not just this one
+  -f, --find TERM...   search session transcripts for TERM... and exit
+                      (case-insensitive; a quoted arg is a phrase)
+      --page N         later screenful of --list / --find results
   -g, --good           list known-good provider/variant combos and exit
   -x, --experimental   allow combos outside the known-good list
   -p, --private        private mode: only allow-private providers/models run
@@ -100,6 +103,16 @@ proc usage() {.noreturn.} =
 config: """ & configPath()
   quit ExitUsage
 
+
+proc pageSkip(page, total: int): int =
+  ## First index of page `page` over `total` items in `SessionListCap`
+  ## chunks. A page past the end is a usage error, not an empty listing,
+  ## so a typo'd page number can't masquerade as "nothing here".
+  let skip = (page - 1) * SessionListCap
+  if skip >= total:
+    let pages = (total + SessionListCap - 1) div SessionListCap
+    die(&"page {page} out of range (1..{pages})", ExitUsage)
+  skip
 
 proc refuseRoot() =
   ## 3code runs arbitrary shell commands the model proposes — root
@@ -359,6 +372,11 @@ proc main() =
   var resumeId = ""
   var sessionOut = ""
   var listSessions = false
+  var allDirs = false
+  var findSessions = false
+  var findTerms: seq[string]
+  var pageOpt = ""
+  var page = 1
   var interactive = false
   var p = initOptParser(commandLineParams())
   for kind, k, v in p.getopt():
@@ -388,15 +406,19 @@ proc main() =
       of "l", "list":
         # Short flags accumulate, so `-la` / `-al` both set this true
         # (parseopt emits one cmdShortOption per clustered letter).
-        # Listing is directory-scoped by design; the full set lives
-        # under `sessionDir()`.
+        # Listing is directory-scoped by default; `-a` widens it.
         listSessions = true
       of "a", "all":
-        # Reserved for a future all-directories listing; for now it's a
-        # recognized no-op that still implies `-l` so `-la` stacks. To
-        # re-enable: set a `listAllDirs` flag here and thread it into
-        # the listing call below as `showCwd = true`.
+        # Scope modifier for -l / -f: every directory, not just this one.
+        # Alone it still implies -l, so bare `-a` lists everything.
+        allDirs = true
         listSessions = true
+      of "f", "find":
+        findSessions = true
+        if v != "": findTerms.add v
+      of "page":
+        if v != "": pageOpt = v
+        else: pending = "page"
       else: die("unknown option: -" & (if k.len == 1: "" else: "-") & k, ExitUsage)
     of cmdArgument:
       if pending == "model":
@@ -408,11 +430,18 @@ proc main() =
       elif pending == "config":
         configPathOverride = k
         pending = ""
+      elif pending == "page":
+        pageOpt = k
+        pending = ""
       else:
         args.add k
     of cmdEnd: discard
   if pending != "":
     die("option --" & pending & " requires a value", ExitUsage)
+  if pageOpt != "":
+    try: page = parseInt(pageOpt)
+    except ValueError: die("page: not a number: " & pageOpt, ExitUsage)
+    if page < 1: die("page: must be 1 or more", ExitUsage)
 
   # Apply a provisional palette before any colored output (update notices,
   # onboarding). The mode can only be forced to dark/light here; full
@@ -421,12 +450,39 @@ proc main() =
   applyPalette(cmDark)
   minline.CaretCellFg = OffWhiteFg
 
-  if listSessions:
-    let paths = listSessionPathsForCwd(safeCwd())
-    if paths.len == 0:
-      stderr.writeLine "3code: no saved sessions for " & safeCwd()
+  if findSessions:
+    for a in args: findTerms.add a
+    var terms: seq[string]
+    for t in findTerms:
+      let n = normalizeTerm(t)
+      if n.len > 0 and n notin terms: terms.add n
+    if terms.len == 0:
+      die("find: no search terms", ExitUsage)
+    let paths =
+      if allDirs: listSessionPaths()
+      else: listSessionPathsForCwd(safeCwd())
+    let hits = searchSessions(paths, terms)
+    if hits.len == 0:
+      stderr.writeLine "3code: no sessions matching " & terms.join(" ")
       quit ExitConfig
-    printSessionList(paths, "", showCwd = false)
+    let skip = pageSkip(page, hits.len)
+    let more = if skip + SessionListCap < hits.len:
+                 "--page " & $(page + 1) & " for more" else: ""
+    printSearchList(hits, hits.len, showCwd = allDirs, skip, more)
+    return
+
+  if listSessions:
+    let paths =
+      if allDirs: listSessionPaths()
+      else: listSessionPathsForCwd(safeCwd())
+    if paths.len == 0:
+      if allDirs: stderr.writeLine "3code: no saved sessions"
+      else: stderr.writeLine "3code: no saved sessions for " & safeCwd()
+      quit ExitConfig
+    let skip = pageSkip(page, paths.len)
+    let more = if skip + SessionListCap < paths.len:
+                 "--page " & $(page + 1) & " for more" else: ""
+    printSessionList(paths, "", showCwd = allDirs, skip, more)
     return
 
   if args.len > 0:

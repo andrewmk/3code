@@ -23,7 +23,7 @@
 ## clean mode switch.
 
 import std/[critbits, exitprocs, json, os, strformat, strutils, tables, terminal]
-import types, util, config, prompts, session, actions, minline, toolstream
+import types, util, config, prompts, session, search, actions, minline, toolstream
 import terminal as termui
 
 # Three visible tiers, designed to read on both light + dark terminal
@@ -879,9 +879,15 @@ const SessionListCap* = 20
   ## lives under `sessionDir()` for anyone who needs it.
 
 proc printSessionListS*(paths: seq[string], currentPath: string,
-                        showCwd: bool): string =
-  ## String form of the `:sessions` / `-l` listing.
-  let shown = paths[0 ..< min(paths.len, SessionListCap)]
+                        showCwd: bool, skip = 0, moreCmd = ""): string =
+  ## String form of the `:sessions` / `-l` listing. `skip` paginates (the
+  ## caller derives it from `--page`); only the displayed slice is ever
+  ## previewed. `moreCmd` names the way to get the next page: the CLI
+  ## passes a --page hint, `:sessions` passes nothing and keeps the
+  ## where-they-live hint instead.
+  let first = min(skip, paths.len)
+  let lastEx = min(skip + SessionListCap, paths.len)
+  let shown = paths[first ..< lastEx]
   for p in shown:
     let id = sessionIdFromPath(p)
     let preview = previewSession(p)
@@ -896,12 +902,46 @@ proc printSessionListS*(paths: seq[string], currentPath: string,
     result.add &"  {mark} " & id &
       &"   ({preview.msgCount} msg" & (if preview.msgCount == 1: "" else: "s") & ")" &
       cwdStr & snip & "\r\n"
-  if paths.len > shown.len:
-    let dir = collapseHome(sessionDir())
-    result.add &"  …  {shown.len} of {paths.len}  (more in {dir})\r\n"
+  if paths.len > lastEx:
+    if moreCmd.len > 0:
+      result.add &"  …  {lastEx} of {paths.len}  ({moreCmd})\r\n"
+    else:
+      let dir = collapseHome(sessionDir())
+      result.add &"  …  {lastEx} of {paths.len}  (more in {dir})\r\n"
 
-proc printSessionList*(paths: seq[string], currentPath: string, showCwd: bool) =
-  stdout.write printSessionListS(paths, currentPath, showCwd)
+proc printSessionList*(paths: seq[string], currentPath: string, showCwd: bool,
+                       skip = 0, moreCmd = "") =
+  stdout.write printSessionListS(paths, currentPath, showCwd, skip, moreCmd)
+  stdout.flushFile
+
+proc printSearchListS*(hits: seq[SearchHit], total: int, showCwd: bool,
+                       skip = 0, moreCmd = ""): string =
+  ## String form of the `-f` / `--find` result page: session id, match
+  ## count, cwd (only when the search spanned directories), and a snippet
+  ## around the first match with 3log formatting stripped. Like the list,
+  ## only the displayed page pays for snippet extraction.
+  let first = min(skip, hits.len)
+  let lastEx = min(skip + SessionListCap, hits.len)
+  for h in hits[first ..< lastEx]:
+    let id = sessionIdFromPath(h.path)
+    let cwdStr =
+      if showCwd:
+        var c = collapseHome(h.cwd)
+        if c.len > 26: c = "…" & c[c.len - 25 .. ^1]
+        c
+      else: ""
+    let snip = hitSnippet(h, if showCwd: 48 else: 72)
+    result.add &"  {id}  {align($h.score, 3)}×" &
+      (if cwdStr.len > 0: "  " & cwdStr else: "") &
+      "  " & snip & "\r\n"
+  if total > lastEx:
+    result.add &"  …  {lastEx} of {total} session" & (if total == 1: "" else: "s")
+    if moreCmd.len > 0: result.add &"  ({moreCmd})"
+    result.add "\r\n"
+
+proc printSearchList*(hits: seq[SearchHit], total: int, showCwd: bool,
+                      skip = 0, moreCmd = "") =
+  stdout.write printSearchListS(hits, total, showCwd, skip, moreCmd)
   stdout.flushFile
 
 proc showToolS*(arg: string, toolLog: seq[ToolRecord]): string =

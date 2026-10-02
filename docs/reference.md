@@ -23,7 +23,9 @@ usage: 3code [options] [prompt...]
 | `-r`, `--resume[=ID]` | resume the latest session from this directory, or a specific one by ID |
 | `-i`, `--interactive` | drop into the REPL after running an initial prompt; without it, a prompt argument runs once and exits |
 | `-l`, `--list` | list recent sessions for this directory (max 20) and exit |
-| `-a`, `--all` | with `-l`, accepted but a no-op for now (reserved) |
+| `-a`, `--all` | with `-l` / `-f`: every directory, not just this one |
+| `-f`, `--find TERMS...` | search session transcripts for TERMS and exit (case-insensitive; a quoted arg is a phrase) |
+| `--page N` | later screenful of `--list` / `--find` results |
 | `-g`, `--good` | list known-good provider/variant combos and exit |
 | `-x`, `--experimental` | allow combinations outside the known-good list |
 | `-p`, `--private` | private mode: only allow-private providers/models run (see [Private mode](manual.html#private-mode)) |

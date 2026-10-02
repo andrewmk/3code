@@ -49,11 +49,10 @@ suite "cli argument validation":
     check code != 2
     check "unexpected argument" notin outp
 
-suite "cli --list cap and short-flag stacking":
+suite "cli --list cap, all-directories scope, and --find":
   # Runs the real binary with an isolated XDG_DATA_HOME and a temp cwd so
-  # `-l` is deterministic regardless of the developer's real sessions.
-  # parseopt clusters short flags per-letter, so `-la` == `-l -a` == `-l`
-  # (the all-directories meaning is disabled, but `-a` is still accepted).
+  # `-l` / `-f` are deterministic regardless of the developer's real
+  # sessions. parseopt clusters short flags per-letter, so `-la` == `-l -a`.
   var tmp: string
 
   setup:
@@ -85,19 +84,28 @@ suite "cli --list cap and short-flag stacking":
       let (outp, code) = execCmdEx(cmd, workingDir = envCwd)
       result = (outp.strip(), code)
 
-  proc seedSession(stamp: string) =
+  proc seedSession(stamp: string, body = "", cwd = "") =
     # Minimal valid .3log under the isolated sessions dir, plus a cwd-index
     # entry so the binary's O(1) `listSessionPathsForCwd` finds it without
     # scanning. saveSession does both; the test must mirror that. The index
     # is written directly under the isolated tmp root (not via the test
     # process's own XDG_DATA_HOME, which is the developer's real one).
+    # `body` lands as the first user message (newlines re-indented to stay
+    # valid body lines); `cwd` defaults to the test cwd so sessions from
+    # "other directories" can be seeded too.
     let dir = tmp / "3code" / "sessions"
     createDir(dir)
     let path = dir / (stamp & ".3log")
-    writeFile(path, "session " & stamp & " profile=stub cwd=" & tmp & "\n\n" &
+    let text =
+      if body == "": "session " & stamp
+      else: body
+    let bodyLines = text.split("\n").mapIt("  " & it).join("\n")
+    writeFile(path, "session " & stamp & " profile=stub cwd=" &
+                     (if cwd == "": tmp else: cwd) & "\n\n" &
                      "system\n  sys\n\n" &
-                     "user\n  session " & stamp & "\n\n")
-    appendIndexAt(tmp / "3code" / "session-paths", tmp, stamp)
+                     "user\n" & bodyLines & "\n\n")
+    appendIndexAt(tmp / "3code" / "session-paths",
+                  (if cwd == "": tmp else: cwd), stamp)
 
   test "-l reports no sessions for an empty directory":
     let r = runIn(tmp, "-l")
@@ -114,24 +122,90 @@ suite "cli --list cap and short-flag stacking":
     check "202601004T120000" notin r.o  # capped out
     check "20 of 25" in r.o           # truncation hint
 
-  test "-la stacks like -l -a (both accepted, directory-scoped)":
-    for i in 0 ..< 3:
-      seedSession("2026020" & $i & "T120000")
-    let stacked = runIn(tmp, "-la")
-    let split = runIn(tmp, "-l -a")
-    check stacked.code == 0
-    check split.code == 0
-    # -a is a no-op on scope now, so -la lists the same directory-scoped
-    # set as -l -a and plain -l.
-    check stacked.o == split.o
-    check "20260202T120000" in stacked.o
+  test "-l --page 2 shows the next screenful, then bounds-checks":
+    for i in 0 ..< 22:
+      seedSession("2026010" & (if i < 10: "0" & $i else: $i) & "T120000")
+    let r1 = runIn(tmp, "-l")
+    check r1.code == 0
+    check "202601000T120000" notin r1.o         # oldest capped out on page 1
+    check "--page 2 for more" in r1.o
+    let r2 = runIn(tmp, "-l --page 2")
+    check r2.code == 0
+    check "202601001T120000" in r2.o           # the overflow pair
+    check "202601000T120000" in r2.o
+    check "--page" notin r2.o                  # last page: no more hint
+    let r3 = runIn(tmp, "-l --page 3")
+    check r3.code == 2
+    check "out of range" in r3.o
 
-  test "-a alone is accepted (implies -l, directory-scoped)":
-    for i in 0 ..< 2:
+  test "-la lists every directory with its cwd, -l stays local":
+    seedSession("20260201T120000", body = "local session")
+    seedSession("20260202T120000", body = "far session",
+                cwd = "/elsewhere/proj")
+    let all = runIn(tmp, "-la")
+    check all.code == 0
+    check "20260201T120000" in all.o
+    check "20260202T120000" in all.o
+    check "/elsewhere/proj" in all.o
+    let local = runIn(tmp, "-l")
+    check "20260202T120000" notin local.o
+    check "20260201T120000" in local.o
+
+  test "-la stacks like -l -a":
+    for i in 0 ..< 3:
       seedSession("2026030" & $i & "T120000")
+    check runIn(tmp, "-la").o == runIn(tmp, "-l -a").o
+
+  test "-a alone implies -l with all-directories scope":
+    seedSession("20260401T120000")
+    seedSession("20260402T120000", body = "far", cwd = "/elsewhere")
     let r = runIn(tmp, "-a")
     check r.code == 0
-    check "20260301T120000" in r.o
+    check "20260401T120000" in r.o
+    check "20260402T120000" in r.o
+    check "/elsewhere" in r.o
+
+  test "-f finds sessions by content with a stripped snippet":
+    seedSession("20260501T120000", body = "the zebra runs at dawn")
+    let r = runIn(tmp, "-f zebra")
+    check r.code == 0
+    check "20260501T120000" in r.o
+    check "zebra runs at dawn" in r.o
+    check "profile=stub" notin r.o          # 3log headers stripped
+
+  test "-f matches phrases across line breaks and spacing":
+    seedSession("20260601T120000", body = "quick brown\nfox jumps")
+    let r = runIn(tmp, "-f \"brown fox\"")
+    check r.code == 0
+    check "20260601T120000" in r.o
+    check "fox jumps" in r.o                 # snippet joins the spanned lines
+
+  test "-f never matches 3log header text":
+    seedSession("20260701T120000", body = "zebra")
+    check runIn(tmp, "-f profile").code == 3
+    check runIn(tmp, "-f stub").code == 3
+
+  test "-f usage errors":
+    seedSession("20260801T120000")
+    check runIn(tmp, "-f").code == 2
+    let r = runIn(tmp, "-f nothingshere")
+    check r.code == 3
+    check "no sessions matching nothingshere" in r.o
+
+  test "-fa searches every directory":
+    seedSession("20260901T120000", body = "walrus", cwd = "/elsewhere")
+    check runIn(tmp, "-f walrus").code == 3
+    let r = runIn(tmp, "-fa walrus")
+    check r.code == 0
+    check "20260901T120000" in r.o
+    check "/elsewhere" in r.o
+
+  test "-f --page bounds-checks like -l":
+    seedSession("20261001T120000", body = "zebra")
+    check runIn(tmp, "-f zebra --page 1").code == 0
+    let r = runIn(tmp, "-f zebra --page 2")
+    check r.code == 2
+    check "out of range" in r.o
 
 suite "cli --config switch":
   # -c/--config redirects the config file. The observable used here: a
