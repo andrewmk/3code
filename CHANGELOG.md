@@ -2,6 +2,19 @@ Changelog
 
 **Unreleased**
 
+- **Session listing scope, transcript search, and paging.** `-l` still
+  lists this directory's 20 newest sessions; `-a`/`--all` now widens it
+  (and the new search) to every directory, printing each session's cwd.
+  New `-f`/`--find TERMS...` searches saved `.3log` transcripts:
+  case-insensitive, whitespace-agnostic phrases (a quoted argument is a
+  phrase that matches across line breaks), OR across terms, ranked by
+  match frequency with newest-first ties, one snippet per hit with the
+  3log formatting stripped. The scan reads each file once and matches
+  through libc `memmem` (the grep -F engine), so ~500 MB of history
+  searches in about a second; only displayed pages pay for snippet
+  extraction. `--page N` pages both listings and search results, and
+  `:sessions all` now lists everything instead of refusing.
+
 - **Keyboard text selection and standard edit ops in the prompt (#44).**
   The input buffer is now a real text widget: Shift+Arrows / Shift+Home
   / Shift+End extend a reverse-video selection (Ctrl+Shift+Arrows by

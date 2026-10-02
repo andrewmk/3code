@@ -149,6 +149,7 @@ An earlier round on GLM-5.2 against opencode alone: 3code used 75% fewer tokens,
 - **800+ known-good combos** - validated provider + model pairings, just works out of the box
 - **Loop guard** - detects runaway autonomous edits, halts at configurable thresholds
 - **Session persistence** - human-readable `.3log` format; resume any past session
+- **Session search** - grep-speed full-text search over every past session (`-f`, `-fa` for all directories)
 - **Native web search** - built-in, no curl dependency
 - **Context clear tool** - wipe accumulated context mid-session to start a subtask fresh
 - **Self-clearing execution** - plan/execute skill resets context between phases for larger tasks
