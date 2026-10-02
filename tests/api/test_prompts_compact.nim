@@ -152,6 +152,21 @@ suite "prompts: defaultReasoningsFor":
     check knownGoodContextWindow("opencodego", "omen-alpha") == 500_000
     check knownGoodGeneration("opencodego", "omen-alpha").maxTokens == 65_536
 
+  test "space bunny rides minimax, reasoning mandatory (no knob)":
+    check knownGoodFamily("openrouter", "stealth/space-bunny-alpha") == "minimax"
+    check knownGoodFamily("opencode", "space-bunny-free") == "minimax"
+    let (fam, ver, vrt) = knownGoodTags("openrouter", "stealth/space-bunny-alpha")
+    check (fam, ver, vrt) == ("minimax", "", "alpha")
+    check defaultReasoningsFor("openrouter", "stealth/space-bunny-alpha",
+                              "minimax") == newSeq[string]()
+    check defaultReasoningsFor("opencode", "space-bunny-free",
+                              "minimax") == newSeq[string]()
+    check knownGoodReasoning("openrouter", "stealth/space-bunny-alpha") == "on"
+    check knownGoodContextWindow("openrouter", "stealth/space-bunny-alpha") ==
+      1_000_000
+    check knownGoodContextWindow("opencode", "space-bunny-free") == 1_000_000
+    check knownGoodGeneration("opencode", "space-bunny-free").maxTokens == 8_192
+
   test "kimi exposes off/on":
     check defaultReasoningsFor("nvidia", "moonshotai/kimi-k2.6", "kimi") ==
       @["off", "on"]

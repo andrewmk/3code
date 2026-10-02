@@ -1,5 +1,5 @@
 import std/[unittest, strutils]
-import threecode/modelname
+import threecode/[config, modelname]
 
 suite "modelname: normalizeModelName":
 
@@ -106,6 +106,12 @@ suite "modelname: normalizeModelName":
     check normalizeModelName("stealth/ox-alpha") == "0xalpha1"
     check normalizeModelName("ox-alpha-free") == "0xalpha1-free"
     check normalizeModelName("x-preview-f-free") == "0xalpha1-f-free"
+
+  test "space bunny (stealth mount, no family of its own, keeps its id)":
+    check normalizeModelName("stealth/space-bunny-alpha") ==
+      "stealth/space-bunny-alpha"
+    check shortModel("stealth/space-bunny-alpha") == "space-bunny-alpha"
+    check shortModel("space-bunny-free") == "space-bunny-free"
 
   test "union (stealth mount of inkling 2, keeps its own name)":
     check normalizeModelName("stealth/union-alpha") == "union-alpha"

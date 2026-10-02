@@ -2318,6 +2318,13 @@ proc applyStreamingOptions*(p: Profile, body: JsonNode) =
     of "zai", "zai-coding", "zaicode":
       body["tool_stream"] = %true
     else: discard
+  # OpenRouter's stealth route drops reasoning deltas from the SSE
+  # stream unless include_reasoning is asked for (verified live:
+  # content-only chunks without it, reasoning deltas with it; every
+  # other openrouter reasoning model streams them unasked).
+  if providerOf(p) == "openrouter" and
+     p.model.toLowerAscii == "stealth/space-bunny-alpha":
+    body["include_reasoning"] = %true
 
 proc applyGenerationDefaults*(p: Profile, body: JsonNode) =
   ## Known-good generation policy: table values with any

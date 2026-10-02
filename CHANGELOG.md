@@ -2,6 +2,22 @@ Changelog
 
 **Unreleased**
 
+- **Space Bunny stealth model known-good on OpenRouter and OpenCode
+  Zen.** `stealth/space-bunny-alpha` (OpenRouter) and `space-bunny-free`
+  (Zen) are a free anonymous preview (1M context, 524k output cap,
+  text+image+video input) whose tokenizer and reasoning wire shape
+  match the MiniMax M-series, so it rides the minimax family:
+  enable_thinking + reasoning_split are accepted on both routes and
+  thinking comes back split from content. Reasoning is mandatory:
+  upstream offers an effort ladder minimal..max but rejects `none`
+  ("Reasoning is mandatory for this endpoint and cannot be disabled")
+  and ignores enable_thinking=false, so `:reasoning` offers no knob
+  (same rule as kimi-k2.7-code). The OpenRouter stealth route also
+  omits reasoning deltas from the stream unless `include_reasoning` is
+  sent; 3code sends it for that mount only. OpenRouter banners the
+  model as going away October 5, so expect that row to vanish then;
+  Zen's free mount has no listed end date.
+
 - **Session listing scope, transcript search, and paging.** `-l` still
   lists this directory's 20 newest sessions; `-a`/`--all` now widens it
   (and the new search) to every directory, printing each session's cwd.
