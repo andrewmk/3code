@@ -376,7 +376,7 @@ brave-key = &quot;...&quot;</pre></p>
 <p><pre class="listing">3code --resume=abc123
 # or
 3code -r:abc123</pre></p>
-<p>Sessions are listed per working directory, so unrelated projects stay out of each other's history. Provider prompt caches may expire before a saved session does. The session will still resume, but its old context may no longer get the cache discount.</p>
+<p>Sessions are listed and searched per working directory by default, so unrelated projects stay out of each other's history; <tt class="docutils literal"><span class="pre">-a</span></tt> opts out of the scoping for both. Provider prompt caches may expire before a saved session does. The session will still resume, but its old context may no longer get the cache discount.</p>
 <p>A resumed session replays the full prior conversation into your scrollback (the same <tt class="docutils literal"><span class="pre">❯</span></tt>/<tt class="docutils literal"><span class="pre">●</span></tt>/tool banners, receipts included) so you land back in context, and the history is re-sent byte-identically to the provider, which keeps the prompt cache hot: a resume usually costs cached-input prices on everything before your new prompt.</p>
 <p>Session files are ordinary JSON under 3code's data directory and are created readable only by your user (mode 0600 on POSIX). Also note that 3code refuses to run as root: it executes the shell commands the model proposes, and root blast radius is unacceptable. Run it as your normal user (<tt class="docutils literal"><span class="pre">THREECODE_ALLOW_ROOT=1</span></tt> overrides, for containers).</p>
 
@@ -573,7 +573,7 @@ tone = &quot;light&quot;</pre></p>
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-02 08:08:43 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-02 10:27:06 UTC</small>
       </div>
     </div>
   </div>

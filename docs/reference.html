@@ -41,7 +41,9 @@
 <tr><td><tt class="docutils literal"><span class="pre">-r</span></tt>, <tt class="docutils literal"><span class="pre">--resume[=ID]</span></tt></td><td>resume the latest session from this directory, or a specific one by ID</td></tr>
 <tr><td><tt class="docutils literal"><span class="pre">-i</span></tt>, <tt class="docutils literal"><span class="pre">--interactive</span></tt></td><td>drop into the REPL after running an initial prompt; without it, a prompt argument runs once and exits</td></tr>
 <tr><td><tt class="docutils literal"><span class="pre">-l</span></tt>, <tt class="docutils literal"><span class="pre">--list</span></tt></td><td>list recent sessions for this directory (max 20) and exit</td></tr>
-<tr><td><tt class="docutils literal"><span class="pre">-a</span></tt>, <tt class="docutils literal"><span class="pre">--all</span></tt></td><td>with <tt class="docutils literal"><span class="pre">-l</span></tt>, accepted but a no-op for now (reserved)</td></tr>
+<tr><td><tt class="docutils literal"><span class="pre">-a</span></tt>, <tt class="docutils literal"><span class="pre">--all</span></tt></td><td>with <tt class="docutils literal"><span class="pre">-l</span></tt> / <tt class="docutils literal"><span class="pre">-f</span></tt>: every directory, not just this one</td></tr>
+<tr><td><tt class="docutils literal"><span class="pre">-f</span></tt>, <tt class="docutils literal"><span class="pre">--find TERMS...</span></tt></td><td>search session transcripts for TERMS and exit (case-insensitive; a quoted arg is a phrase)</td></tr>
+<tr><td><tt class="docutils literal"><span class="pre">--page N</span></tt></td><td>later screenful of <tt class="docutils literal"><span class="pre">--list</span></tt> / <tt class="docutils literal"><span class="pre">--find</span></tt> results</td></tr>
 <tr><td><tt class="docutils literal"><span class="pre">-g</span></tt>, <tt class="docutils literal"><span class="pre">--good</span></tt></td><td>list known-good provider/variant combos and exit</td></tr>
 <tr><td><tt class="docutils literal"><span class="pre">-x</span></tt>, <tt class="docutils literal"><span class="pre">--experimental</span></tt></td><td>allow combinations outside the known-good list</td></tr>
 <tr><td><tt class="docutils literal"><span class="pre">-p</span></tt>, <tt class="docutils literal"><span class="pre">--private</span></tt></td><td>private mode: only allow-private providers/models run (see <a class="reference external" href="manual.html#private-mode">Private mode</a>)</td></tr>
@@ -175,7 +177,7 @@ models = &quot;zai-org/GLM-5&quot;</pre></p>
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-02 08:08:43 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-02 10:27:06 UTC</small>
       </div>
     </div>
   </div>
