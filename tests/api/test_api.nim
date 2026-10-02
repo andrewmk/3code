@@ -31,6 +31,36 @@ suite "api request shaping":
 
     check "tool_stream" notin body
 
+  test "space bunny on openrouter gets include_reasoning (stealth route omits it)":
+    # The stealth route drops reasoning deltas from the SSE stream unless
+    # include_reasoning is set; every other openrouter model streams them
+    # unasked, so the flag is mount-specific.
+    var body = %*{"stream": true}
+    let p = Profile(name: "openrouter.stealth/space-bunny-alpha",
+                    family: "minimax", model: "stealth/space-bunny-alpha")
+
+    applyStreamingOptions(p, body)
+
+    check body{"include_reasoning"}.getBool == true
+
+  test "space bunny on zen streams reasoning natively (no include_reasoning)":
+    var body = %*{"stream": true}
+    let p = Profile(name: "opencode.space-bunny-free", family: "minimax",
+                    model: "space-bunny-free")
+
+    applyStreamingOptions(p, body)
+
+    check "include_reasoning" notin body
+
+  test "plain openrouter models do not get include_reasoning":
+    var body = %*{"stream": true}
+    let p = Profile(name: "openrouter.minimax/minimax-m3", family: "minimax",
+                    model: "minimax/minimax-m3")
+
+    applyStreamingOptions(p, body)
+
+    check "include_reasoning" notin body
+
   test "known-good combo gets hardcoded generation defaults":
     var body = %*{"stream": true}
     let p = Profile(name: "zai.glm-5.1", family: "glm", model: "glm-5.1")
